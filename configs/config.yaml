@@ -1,0 +1,12 @@
+# The shared experiment config schema is implemented in hyperweave/config.py.
+seed: 11
+dataset: nf_unsw_nb15_v2
+model: b1
+input_dim: 43
+width: 16
+functional_hidden: 4
+learning_rate: 0.01
+epochs: 20
+batch_size: 256
+target_fpr: 0.001
+
