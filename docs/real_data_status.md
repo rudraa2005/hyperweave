@@ -1,0 +1,11 @@
+# Real NF-v2 data check (2026-10-24)
+
+The completed `data/raw/NF-UNSW-NB15-v2.csv` was streamed through the real loader audit. Its SHA-1 (`dde9a9e38009ec60121cbb4fd884bf2c7cf5c0b0`) and SHA-256 match the CSV inside the downloaded UQ ZIP; SHA-1 also matches the ZIP manifest. The CSV has 43 NetFlow features plus `Label` and `Attack`. The feature-description CSV lists the same 43 names in a different order, so `configs/nf_v2_features.txt` defines a canonical order and the loader reorders columns. IPv4 strings are converted deterministically to unsigned 32-bit values. This preserves the feature count, but endpoint identity may affect generalization and must be evaluated with valid splits.
+
+The [streaming audit](../runs/real_unsw_audit_02/audit.json) found 2,390,275 rows: 2,295,222 benign and 95,053 attack. It found zero non-finite feature values and zero `Label`/`Attack` conflicts. It found 68 repeated feature hashes among the first 500,000 rows; that is a limited duplicate check, not full-file deduplication.
+
+The real-data training smoke wrote five immutable [registry records](../runs/real_unsw_audit_02/registry.sqlite), all marked `smoke_only` at code commit `4d6153e`. B1 and B2 produced finite logits on 1,000 balanced training rows. B3 produced three baked int8 candidates with 712, 623 and 178 MACs; all had finite float logits and bit-exact C-kernel output against the Python int8 reference. No detection rate, PR-AUC, FPR, hypervolume or research latency was computed from this smoke sample.
+
+**Research evaluation remains blocked:** the CSV header has no verified campaign or timestamp field. The production baseline loader raises `MissingSplitMetadataError` before reading the full file; it does not substitute a random-flow or row-order split. The `Attack` column is an attack category, not verified campaign metadata. The CSE-CIC download was still a `.crdownload` partial ZIP when checked, so its CSV was not inspected or used.
+
+The portable test gate is `make verify-phase3`: **60 passed, 1 skipped**. The skip is physical CPU pinning on this macOS host. Once the CSE download is complete, run the audit with its extracted CSV and a fresh output directory. Real detection and claim tests additionally need verified campaign/time metadata or a preregistered alternative grouping protocol that meets the no-leakage objective.
