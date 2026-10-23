@@ -58,6 +58,18 @@ def test_real_csv_audit_smoke_has_no_performance_claim(tmp_path):
     assert all(run["metrics"]["detection_rate"] is None for run in registry.all_runs())
 
 
+def test_real_csv_phase2_smoke_uses_kernel_without_performance_claim(tmp_path):
+    path, features = _fixture(tmp_path)
+    report = audit(path, "nf_unsw_nb15_v2", features, tmp_path / "phase2",
+                   chunksize=5, smoke_train=True, phase2_smoke=True, sample_per_class=4)
+    assert len(report["phase2_smoke"]) == 3
+    assert all(point["finite_float_logits"] and point["kernel_bit_exact"]
+               for point in report["phase2_smoke"])
+    registry = Registry(tmp_path / "phase2" / "registry.sqlite")
+    assert len(registry.all_runs()) == 5
+    assert all(run["metrics"]["detection_rate"] is None for run in registry.all_runs())
+
+
 def test_official_manifest_has_43_unique_features():
     path = Path(__file__).resolve().parents[2] / "configs" / "nf_v2_features.txt"
     features = path.read_text().splitlines()

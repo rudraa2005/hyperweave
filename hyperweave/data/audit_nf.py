@@ -14,8 +14,11 @@ import numpy as np
 import pandas as pd
 
 from hyperweave.config import Config
-from hyperweave.data.flows import csv_header, iter_nf_csv_chunks, validate_nf_header
-from hyperweave.models import AffineMLP, FunctionalNet
+from hyperweave.data.flows import iter_nf_csv_chunks, validate_nf_header
+from hyperweave.data.shifts import apply_shift
+from hyperweave.kernel.runner import compile_kernel, infer, write_inputs
+from hyperweave.models import (AffineMLP, FunctionalNet, HyperNet, NeuronSpec,
+                               bake, quantize, save_hypernet, write_int8)
 from hyperweave.registry import Registry
 from hyperweave.seed import seed_everything
 
@@ -35,7 +38,9 @@ def _git_commit():
 
 
 def audit(path, dataset, features, output, *, chunksize=100000, smoke_train=False,
-          sample_per_class=500, duplicate_check_limit=500000):
+          phase2_smoke=False, sample_per_class=500, duplicate_check_limit=500000):
+    if phase2_smoke and not smoke_train:
+        raise ValueError("Phase 2 smoke requires sampled training rows")
     path, output = Path(path), Path(output)
     if output.exists() and any(output.iterdir()):
         raise FileExistsError("use a fresh audit output directory")
@@ -122,6 +127,53 @@ def audit(path, dataset, features, output, *, chunksize=100000, smoke_train=Fals
             smoke_results.append({"run_id": record["run_id"], "finite_logits": metrics["finite_logits"],
                                   "checkpoint_path": str(checkpoint)})
         report["training_smoke"] = smoke_results
+        if phase2_smoke:
+            shift_columns = tuple(features.index(name) for name in
+                                  ("IN_BYTES", "FLOW_DURATION_MILLISECONDS") if name in features)
+            if not shift_columns:
+                shift_columns = (2,) if len(features) > 2 else (0,)
+            def transform(batch, family, columns, shift_seed):
+                raw = batch * scale + center
+                shifted = apply_shift(raw, family, columns, 1, seed=shift_seed)
+                return (shifted - center) / scale
+            hyper = HyperNet(NeuronSpec(len(features), 8, 2), seed=11)
+            hyper.fit(x, y, epochs=1, batch_size=128, seed=11,
+                      shift_columns=shift_columns, shift_transform=transform)
+            hyper_checkpoint = output / f"{dataset}_b3_hypernet_smoke_seed11.npz"
+            save_hypernet(hyper, hyper_checkpoint)
+            binary = compile_kernel(output / "infer")
+            phase2_results = []
+            for index, preference in enumerate(((.8, .1, .1), (.28, .12, .6), (.25, .1, .65))):
+                baked = bake(hyper, preference, (0, 0))
+                float_logits = baked.logits(x[:128])
+                int8 = quantize(baked, x)
+                export = output / f"{dataset}_b3_smoke_lambda{index}.hwi"
+                run_id = f"{dataset}_b3_real_smoke_lambda{index}_seed11"
+                write_int8(int8, export, {"run_id": run_id, "dataset_hash": digest,
+                                              "seed": 11, "git_commit": _git_commit(),
+                                              "hypernet_checkpoint": str(hyper_checkpoint),
+                                              "smoke_only": True})
+                inputs = int8.quantize_inputs(x[:128])
+                input_path = output / f"{dataset}_b3_smoke_lambda{index}.i8"
+                write_inputs(input_path, inputs)
+                expected = int8.logits_int(inputs)
+                actual = infer(binary, export, input_path, len(inputs))
+                metrics = {"training_smoke_only": True, "finite_float_logits": bool(np.isfinite(float_logits).all()),
+                           "kernel_bit_exact": bool(np.array_equal(expected, actual)),
+                           "macs": baked.macs, "int8_export_bytes": export.stat().st_size,
+                           "detection_rate": None, "pr_auc": None, "fpr": None,
+                           "reason": "no verified campaign/time split; no validation or test metrics"}
+                record = {"run_id": run_id, "config": Config(dataset=dataset, model="b3", width=8,
+                    functional_hidden=2, epochs=1, batch_size=128, preference=preference,
+                    shift_columns=shift_columns).as_dict(), "seed": 11, "dataset_hash": digest,
+                    "git_commit": _git_commit(), "metrics": metrics,
+                    "checkpoint_path": str(hyper_checkpoint), "export_path": str(export),
+                    "status": "smoke_only"}
+                registry.write(record)
+                phase2_results.append({"run_id": run_id, "finite_float_logits": metrics["finite_float_logits"],
+                                       "kernel_bit_exact": metrics["kernel_bit_exact"],
+                                       "macs": baked.macs, "int8_export_bytes": metrics["int8_export_bytes"]})
+            report["phase2_smoke"] = phase2_results
     (output / "audit.json").write_text(json.dumps(report, indent=2, sort_keys=True))
     return report
 
@@ -133,11 +185,13 @@ def main():
     parser.add_argument("--features", default="configs/nf_v2_features.txt")
     parser.add_argument("--output", required=True)
     parser.add_argument("--smoke-train", action="store_true")
+    parser.add_argument("--smoke-phase2", action="store_true")
     parser.add_argument("--chunksize", type=int, default=100000)
     args = parser.parse_args()
     features = Path(args.features).read_text().splitlines()
     report = audit(args.csv, args.dataset, features, args.output,
-                   chunksize=args.chunksize, smoke_train=args.smoke_train)
+                   chunksize=args.chunksize, smoke_train=args.smoke_train,
+                   phase2_smoke=args.smoke_phase2)
     print(json.dumps({key: report[key] for key in ("dataset", "rows", "labels", "attack_categories",
                                                     "nonfinite_feature_values", "label_attack_conflicts",
                                                     "duplicate_feature_hashes_in_checked_rows",
@@ -145,6 +199,8 @@ def main():
                                                     "performance_evaluation")}, indent=2))
     if args.smoke_train:
         print(json.dumps(report["training_smoke"], indent=2))
+    if args.smoke_phase2:
+        print(json.dumps(report["phase2_smoke"], indent=2))
 
 
 if __name__ == "__main__":
