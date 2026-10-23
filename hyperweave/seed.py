@@ -12,6 +12,12 @@ def seed_everything(seed: int) -> np.random.Generator:
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     os.environ["MKL_NUM_THREADS"] = "1"
     try:
+        from threadpoolctl import threadpool_limits
+    except ImportError:
+        pass
+    else:
+        threadpool_limits(limits=1)
+    try:
         import torch
     except ImportError:
         pass

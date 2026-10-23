@@ -4,8 +4,8 @@ import pytest
 
 from hyperweave.data import SHIFT_FAMILIES, deduplicate, load_nf_csv, split_by_campaign, validate_disjoint, validate_chronological
 from hyperweave.data.evasion import projected_gradient, toward_benign
-from hyperweave.data.fashion import corrupt, fixed_partition
-from hyperweave.eval import score_binary, threshold_at_fpr
+from hyperweave.data.fashion import corrupt, fixed_partition, read_idx_images, read_idx_labels
+from hyperweave.eval import score_binary, score_with_recalibration, threshold_at_fpr
 from hyperweave.models import AffineMLP, FunctionalNet, affine_macs, functional_macs, match_affine_width
 
 pytestmark = pytest.mark.phase1
@@ -18,6 +18,16 @@ def test_fmnist_corruptions_deterministic():
             np.testing.assert_array_equal(corrupt(x, family, severity, 5), corrupt(x, family, severity, 5))
     a, b, c = fixed_partition(100)
     assert len(set(a) | set(b) | set(c)) == 100
+
+
+def test_fmnist_idx_loader(tmp_path):
+    import struct
+    images = tmp_path / "images.idx"
+    labels = tmp_path / "labels.idx"
+    images.write_bytes(struct.pack(">IIII", 2051, 2, 2, 2) + bytes(range(8)))
+    labels.write_bytes(struct.pack(">II", 2049, 2) + bytes([3, 7]))
+    assert read_idx_images(images).shape == (2, 2, 2)
+    assert read_idx_labels(labels).tolist() == [3, 7]
 
 
 def test_mac_counter_affine():
@@ -88,6 +98,9 @@ def test_threshold_calibration():
     assert abs(np.mean(benign > threshold) - .001) <= .0002
     metrics = score_binary(np.r_[np.zeros(10000), np.ones(10)], np.r_[benign, np.full(10, 10001)], threshold)
     assert metrics["detection_rate"] == 1
+    recal = score_with_recalibration(np.r_[np.zeros(10000), np.ones(10)],
+                                     np.r_[benign, np.full(10, 10001)], threshold, .001)
+    assert recal["original"] == recal["recalibrated"]
 
 
 def test_shift_family_disjoint():

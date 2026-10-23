@@ -15,7 +15,7 @@ from sklearn.linear_model import LogisticRegression
 from hyperweave.config import Config
 from hyperweave.data import deduplicate, load_nf_csv, split_by_campaign, validate_disjoint, validate_chronological
 from hyperweave.data.flows import dataset_hash
-from hyperweave.eval import score_binary, threshold_at_fpr
+from hyperweave.eval import score_binary, score_with_recalibration, threshold_at_fpr
 from hyperweave.models import AffineMLP, FunctionalNet, match_affine_width
 from hyperweave.registry import Registry
 from hyperweave.seed import seed_everything
@@ -71,6 +71,7 @@ def run(csv_path, features, dataset, campaign_col, time_col, output, *, seed=11,
         b_scores = model.logits(b_x)
         float_ns_per_flow = (time.perf_counter_ns() - t0) / len(b_x)
         metrics = score_binary(b_y, b_scores, threshold)
+        metrics["b_recalibrated"] = score_with_recalibration(b_y, b_scores, threshold, target_fpr)["recalibrated"]
         metrics.update(train_seconds=training_s, float_ns_per_flow=float_ns_per_flow,
                        macs=model.macs, params=model.params, threshold=threshold,
                        threshold_source="a_val", logistic_b_detection=baseline_b["detection_rate"],

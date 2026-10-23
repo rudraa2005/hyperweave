@@ -17,6 +17,18 @@ def read_idx_images(path):
     return data.reshape(n, rows, cols).copy()
 
 
+def read_idx_labels(path):
+    opener = gzip.open if str(path).endswith(".gz") else Path.open
+    with opener(path, "rb") as f:
+        magic, n = struct.unpack(">II", f.read(8))
+        if magic != 2049:
+            raise ValueError("not IDX label data")
+        data = np.frombuffer(f.read(), dtype=np.uint8)
+    if data.size != n:
+        raise ValueError("truncated IDX labels")
+    return data.copy()
+
+
 def fixed_partition(n, seed=11):
     ids = np.random.default_rng(seed).permutation(n)
     a, b = int(n * .8), int(n * .9)

@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from hyperweave.models import AffineMLP, FunctionalNet
+from hyperweave.eval import score_binary
 from hyperweave.registry import Registry
 from hyperweave.seed import seed_everything
 
@@ -22,6 +23,7 @@ def test_determinism():
             model = cls(*args, seed=11).fit(x, y, epochs=3, seed=11)
             outputs.append(model.logits(x))
         np.testing.assert_array_equal(*outputs)
+        assert score_binary(y, outputs[0], 0) == score_binary(y, outputs[1], 0)
 
 
 def test_registry_immutable(tmp_path):

@@ -23,3 +23,13 @@ def score_binary(y, scores, threshold):
     return {"fpr": float(np.mean(scores[benign] > threshold)),
             "detection_rate": float(np.mean(scores[attack] > threshold)),
             "pr_auc": float(average_precision_score(y, scores))}
+
+
+def score_with_recalibration(y, scores, original_threshold, target_fpr):
+    """Diagnostic held-out recalibration; never feed this threshold into training."""
+    y = np.asarray(y)
+    scores = np.asarray(scores, float)
+    new_threshold = threshold_at_fpr(scores[y == 0], target_fpr)
+    return {"original": score_binary(y, scores, original_threshold),
+            "recalibrated": score_binary(y, scores, new_threshold),
+            "recalibrated_threshold": new_threshold}
