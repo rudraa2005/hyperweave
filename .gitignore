@@ -6,4 +6,5 @@ __pycache__/
 runs/
 data/raw/
 *.csv
+.DS_Store
 

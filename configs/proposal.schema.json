@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HyperWeave agent proposal",
+  "type": "object",
+  "required": ["hypothesis", "config_diff", "predicted_effect", "cost_estimate", "success_criterion", "action", "rationale", "validation_plan"],
+  "additionalProperties": false,
+  "properties": {
+    "hypothesis": {"type": "string", "minLength": 1},
+    "config_diff": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "width": {"type": "integer", "minimum": 1},
+        "functional_hidden": {"type": "integer", "minimum": 1},
+        "learning_rate": {"type": "number", "exclusiveMinimum": 0},
+        "epochs": {"type": "integer", "minimum": 1},
+        "batch_size": {"type": "integer", "minimum": 1},
+        "preference": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+        "context": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+        "loss_mode": {"enum": ["linear", "phn_hvi"]},
+        "dirichlet_concentration": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+        "shift_columns": {"type": "array", "items": {"type": "integer"}, "minItems": 1}
+      }
+    },
+    "predicted_effect": {"type": "number"},
+    "cost_estimate": {"type": "integer", "minimum": 1},
+    "success_criterion": {"type": "string", "minLength": 1},
+    "action": {"enum": ["run_experiment", "bake_model", "simulate_response"]},
+    "rationale": {"type": "string", "minLength": 1},
+    "validation_plan": {"type": "string", "minLength": 1}
+  }
+}

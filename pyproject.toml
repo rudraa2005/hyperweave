@@ -9,5 +9,5 @@ test = ["pytest>=8"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["phase1: phase 1 tests", "phase2: phase 2 tests", "global_gate: tests required in every phase"]
+markers = ["phase1: phase 1 tests", "phase2: phase 2 tests", "phase3: phase 3 tests", "global_gate: tests required in every phase"]
 
