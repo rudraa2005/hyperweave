@@ -1,24 +1,77 @@
 import hashlib
+import csv
+import ipaddress
 from pathlib import Path
 
 import pandas as pd
 
 
 DATASETS = {"nf_unsw_nb15_v2", "nf_cse_cic_ids2018_v2"}
+IPV4_FEATURES = frozenset({"IPV4_SRC_ADDR", "IPV4_DST_ADDR"})
+
+
+class MissingSplitMetadataError(ValueError):
+    pass
+
+
+def csv_header(path):
+    with Path(path).open("r", encoding="utf-8-sig", newline="") as source:
+        return next(csv.reader(source))
+
+
+def validate_nf_header(path, dataset: str, features: list[str]):
+    if dataset not in DATASETS or len(features) != 43 or len(set(features)) != 43:
+        raise ValueError("expected known NF-v2 dataset and 43 unique ordered feature names")
+    header = csv_header(path)
+    if len(header) != len(set(header)):
+        raise ValueError("duplicate CSV column names")
+    missing = (set(features) | {"Label"}) - set(header)
+    if missing:
+        raise ValueError(f"missing required columns: {missing}")
+    return header
+
+
+def encode_nf_features(frame: pd.DataFrame, features: list[str]):
+    """Deterministic IPv4-to-uint32 conversion; other features stay numeric."""
+    out = frame.copy()
+    for name in features:
+        if name in IPV4_FEATURES:
+            try:
+                out[name] = out[name].map(lambda value: int(ipaddress.IPv4Address(str(value)))).astype("uint32")
+            except (ipaddress.AddressValueError, ValueError, TypeError) as exc:
+                raise ValueError(f"invalid IPv4 value in {name}") from exc
+        elif not pd.api.types.is_numeric_dtype(out[name]):
+            out[name] = pd.to_numeric(out[name], errors="raise")
+        if out[name].isna().any():
+            raise ValueError(f"missing feature values in {name}")
+    return out
+
+
+def iter_nf_csv_chunks(path, dataset: str, features: list[str], *, chunksize=100000):
+    header = validate_nf_header(path, dataset, features)
+    if not isinstance(chunksize, int) or chunksize < 1:
+        raise ValueError("chunksize must be positive")
+    columns = features + ["Label"] + (["Attack"] if "Attack" in header else [])
+    for chunk in pd.read_csv(path, usecols=columns, chunksize=chunksize):
+        chunk = encode_nf_features(chunk, features)
+        labels = pd.to_numeric(chunk["Label"], errors="raise")
+        if not labels.isin([0, 1]).all():
+            raise ValueError("Label must be binary 0/1")
+        yield chunk.loc[:, columns]
 
 
 def load_nf_csv(path, dataset: str, features: list[str], *, campaign_col: str, time_col: str):
     """Load a supplied NF-v2 CSV; fail closed if metadata or feature schema is absent."""
-    if dataset not in DATASETS or len(features) != 43 or len(set(features)) != 43:
-        raise ValueError("expected known NF-v2 dataset and 43 unique ordered feature names")
-    df = pd.read_csv(path)
+    header = validate_nf_header(path, dataset, features)
     required = set(features) | {"Label", campaign_col, time_col}
-    if not required <= set(df.columns):
-        raise ValueError(f"missing required columns: {required - set(df.columns)}")
-    if df[features].isna().any().any():
-        raise ValueError("missing feature values")
-    if not all(pd.api.types.is_numeric_dtype(df[c]) for c in features):
-        raise ValueError("non-numeric feature; encoding must be specified before experiment")
+    if not {campaign_col, time_col} <= set(header):
+        raise MissingSplitMetadataError(
+            f"campaign/time columns missing: {sorted({campaign_col, time_col} - set(header))}; "
+            "do not use a random-flow or row-order split")
+    if not required <= set(header):
+        raise ValueError(f"missing required columns: {required - set(header)}")
+    df = pd.read_csv(path, usecols=list(required))
+    df = encode_nf_features(df, features)
     labels = pd.to_numeric(df["Label"], errors="raise")
     if not labels.isin([0, 1]).all() or labels.nunique() != 2:
         raise ValueError("Label must contain both binary classes 0 and 1")
