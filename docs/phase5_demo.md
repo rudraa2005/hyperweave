@@ -3,7 +3,25 @@
 Start with the command in `README.md`, then open the localhost page. The five
 views are Traffic console, Posture + autopilot, Evasion test, Agent notebook,
 and Scoreboard. Every displayed score comes from the Phase 4 registry or from
-an actual on-demand bake of its selected B3 hypernetwork checkpoint.
+an actual on-demand bake of its selected B3 hypernetwork checkpoint. Each
+slider generation now writes its measured metrics, source run, threshold
+provenance, and artifact SHA-256 to `demo_actions.sqlite`; the UI shows the
+registry event ID. Generated artifacts have unique names so a later slider
+movement cannot overwrite an earlier recorded artifact.
+
+## Model path
+
+```mermaid
+flowchart LR
+  A[Network-flow features] --> N[A-train normalizer]
+  P[Cost preference and context] --> H[B3 hypernetwork checkpoint]
+  H --> B[Functional-neuron parameters and gates]
+  B --> Q[Bake and int8 quantize]
+  N --> K[C int8 inference kernel]
+  Q --> K
+  K --> O[B scores and A-val threshold]
+  O --> R[Registry-backed outcome]
+```
 
 ## Three-minute path
 
@@ -19,6 +37,8 @@ an actual on-demand bake of its selected B3 hypernetwork checkpoint.
    kernel latency. No optimizer step runs. Grey neurons are pruned. Run the
    context autopilot replay; it reports a cost change only if detection rates
    match within 2%. B has no verified temporal order, so this is a proxy.
+   Kernel latency is measured on the same bounded 256-flow B timing batch;
+   detection and bit-exact checks use the full B partition.
 4. **1:30–1:55 — Evasion.** Run a constrained padding or jitter attack on B
    attack flows. Show the original and evasion detection rates; explain that
    this is a feature-space proxy with immutable endpoint/protocol fields.
@@ -44,3 +64,7 @@ generation without an optimizer step, constrained evasion, the approval gate,
 the five views, the limits control, and in-process HTTP routes. A local socket
 bind may be disallowed by some sandbox environments; the in-process route tests
 do not require a socket.
+
+The three-minute script is a presentation target. A timed manual dry run and a
+clean-machine offline demo remain unverified in this checkout because the
+Phase 4 study artifacts and raw datasets are absent.

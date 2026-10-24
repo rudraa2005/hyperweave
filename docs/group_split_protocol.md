@@ -16,7 +16,9 @@ This protocol evaluates endpoint and dataset shift; it does not test chronology.
   lowest deterministic row-rank hashes over the **entire** CSV. Deduplicate
   selected feature vectors; refuse conflicting labels, group overlap, or a
   partition lacking either class. No flow-level random split or row-order
-  cutoff is used. Checkpoint the selected rows and exact source SHA-256 hashes.
+  cutoff is used. Checkpoint the selected rows, exact source SHA-256 hashes,
+  and SHA-256 hashes of each partition artifact. Phase 4 checks public
+  partition hashes before running; Phase 5 checks them before displaying scores.
 - For the bounded training budget, draw up to 2,000 flows per class from
   A-train with RNG seed `20261024`. This is training subsampling inside the
   already assigned group partition; A-val, B and sealed retain their selected
@@ -34,6 +36,9 @@ This protocol evaluates endpoint and dataset shift; it does not test chronology.
   float-to-int8 gap are reported separately. B1 has no int8 kernel export.
 - Research latency and 3D hypervolume require a physically pinned core. On an
   unpinned host, report debug timings separately and leave research HV blank.
+  Kernel timing uses the same first 256 B flows for every candidate (or all B
+  flows if fewer than 256); full B is still used for detection metrics and
+  C/Python bit-exact inference. The timing record includes its batch row count.
 - C1–C4 verdicts remain inconclusive because the original supported/refuted
   thresholds were not supplied. Do not choose them after seeing outcomes.
 

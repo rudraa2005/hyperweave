@@ -12,13 +12,15 @@ def _features(config: Config):
 
 
 class Surrogate:
-    def __init__(self, registry):
+    def __init__(self, registry, *, condition=None):
         self.registry = registry
+        self.condition = condition
 
     def predict(self, config: Config):
         if not isinstance(config, Config):
             raise TypeError("config must be Config")
-        all_rows = self.registry.all_runs()
+        all_rows = [row for row in self.registry.all_runs()
+                    if self.condition is None or row["config"]["model"] == self.condition]
         real_rows = [r for r in all_rows if isinstance(r.get("metrics", {}).get("hv_gain_per_cost"), (int, float))]
         rows = (real_rows if real_rows else [r for r in all_rows if isinstance(
             r.get("metrics", {}).get("proxy_hv_gain_per_cost"), (int, float))])

@@ -1,5 +1,6 @@
 """Local-only Phase 5 dashboard backed by the real group-split registry."""
 import argparse
+import hashlib
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,10 +13,11 @@ from hyperweave.agents.budget import HumanDecision
 from hyperweave.agents.cycle import AgentCycle, ScriptedClient
 from hyperweave.baselines.phase3 import scripted_responses
 from hyperweave.config import Config, SEARCH_OPTIONS
-from hyperweave.data.evasion import constrained_nf_evasion
+from hyperweave.data.evasion import constrained_nf_evasion, nf_mutable_mask
+from hyperweave.data.group_split import file_sha256, study_dataset_hash
 from hyperweave.data.normalization import FlowNormalizer
 from hyperweave.eval.metrics import score_binary, threshold_at_fpr
-from hyperweave.kernel.runner import bench, compile_kernel, infer, write_inputs
+from hyperweave.kernel.runner import TIMING_BATCH_ROWS, bench, compile_kernel, infer, write_inputs
 from hyperweave.models import bake, load_hypernet, quantize, write_int8
 from hyperweave.registry import Registry
 
@@ -29,6 +31,14 @@ class DemoState:
         self.report = json.loads((self.study / "report.json").read_text())
         if self.report["kind"] != "real_nf_v2_endpoint_group_alternate_study":
             raise ValueError("demo needs the real endpoint-group study")
+        manifest = json.loads((self.split / "manifest.json").read_text())
+        if manifest.get("kind") != "endpoint_pair_group_disjoint_v1" or \
+                study_dataset_hash(manifest) != self.report["dataset_hash"]:
+            raise ValueError("demo split does not match the study report")
+        for name in ("a_train", "a_val", "b"):
+            expected_hash = manifest.get("partitions", {}).get(name, {}).get("sha256")
+            if expected_hash is not None and file_sha256(self.split / "public" / f"{name}.npz") != expected_hash:
+                raise ValueError(f"demo public partition hash mismatch: {name}")
         self.registry = Registry(self.study / "registry.sqlite")
         self.normalizer = FlowNormalizer.load(self.study / "normalizer.npz")
         self.train_raw = self._public("a_train")
@@ -41,6 +51,8 @@ class DemoState:
         if not selected:
             raise ValueError("no completed B3 candidate available for slider")
         self.source = self.registry.read(selected)
+        if self.source is None or self.source["dataset_hash"] != self.report["dataset_hash"]:
+            raise ValueError("selected B3 run does not match the study report")
         self.hypernet = load_hypernet(self.study / self.source["checkpoint_path"])
         self.binary = compile_kernel(self.study / "demo_infer")
         self.generated_dir = self.study / "demo_generated"
@@ -49,6 +61,7 @@ class DemoState:
         self.current = None
         self.demo_registry = Registry(self.study / "demo_actions.sqlite")
         self.action_number = len(self.demo_registry.events("cycle_outcome"))
+        self.generation_number = len(self.demo_registry.events("model_generation"))
 
     def _public(self, name):
         with np.load(self.split / "public" / f"{name}.npz", allow_pickle=False) as data:
@@ -67,7 +80,7 @@ class DemoState:
                 "agent_mode": "recorded scripted offline cycle; no live LLM",
                 "data_mode": "real NF-v2 group-disjoint alternate study",
                 "limits": ["No verified campaign or timestamp field; chronological generalization untested",
-                           "B4 search used a 2D debug cost proxy because CPU core pinning is unavailable",
+                           "B4 search used a debug cost proxy; research HV is shown only where timing is pinned",
                            "C1–C4 claim thresholds absent; verdicts inconclusive",
                            "Feature-space evasion is a proxy for packet-level manipulation",
                            "No DPU or production traffic blocking measured"]}
@@ -80,7 +93,8 @@ class DemoState:
             baked = bake(self.hypernet, preference, (load, alerts))
             quantized = quantize(baked, self.train_x[:1024])
             threshold = threshold_at_fpr(baked.logits(self.val_x)[self.val_raw[1] == 0], .001)
-            run_key = f"cost{round(cost * 1000):04d}_load{load}_alerts{alerts}"
+            self.generation_number += 1
+            run_key = f"generation{self.generation_number:06d}_cost{round(cost * 1000):04d}_load{load}_alerts{alerts}"
             export = self.generated_dir / f"{run_key}.hwi"
             inputs = self.generated_dir / f"{run_key}.i8"
             write_int8(quantized, export, {"source_run_id": self.source["run_id"],
@@ -95,16 +109,27 @@ class DemoState:
                 raise ValueError("generated model disagrees with C kernel")
             float_metrics = score_binary(self.b_raw[1], baked.logits(self.b_x), threshold)
             int8_metrics = score_binary(self.b_raw[1], quantized.logits(self.b_x), threshold)
-            timing = bench(self.binary, export, inputs, warmup=20, iterations=500)
-            self.current = {"int8": quantized, "threshold": threshold, "baked": baked,
-                            "preference": preference}
-            return {"source_run_id": self.source["run_id"], "preference": preference,
+            timing_inputs = self.generated_dir / f"{run_key}.bench.i8"
+            timing_rows = min(TIMING_BATCH_ROWS, len(input_q))
+            write_inputs(timing_inputs, input_q[:timing_rows])
+            timing = bench(self.binary, export, timing_inputs, warmup=20, iterations=500)
+            timing["batch_rows"] = timing_rows
+            result = {"source_run_id": self.source["run_id"], "preference": preference,
                     "context": [load, alerts], "float": float_metrics, "int8": int8_metrics,
                     "int8_detection_gap": int8_metrics["detection_rate"] - float_metrics["detection_rate"],
                     "macs": baked.macs, "int8_model_bytes": export.stat().st_size,
                     "gate_mask": baked.gate_mask.tolist(), "latency": timing,
                     "optimizer_steps_during_generation": 0,
                     "timing_note": "Unpinned kernel-only debug measurement"}
+            event = self.demo_registry.append_event("model_generation", {
+                "generation_id": run_key, "source_run_id": self.source["run_id"],
+                "dataset_hash": self.report["dataset_hash"],
+                "artifact": str(export), "artifact_sha256": hashlib.sha256(export.read_bytes()).hexdigest(),
+                "threshold": threshold, "threshold_source": "a_val", "result": result})
+            result["registry_event_id"] = event
+            self.current = {"int8": quantized, "threshold": threshold, "baked": baked,
+                            "preference": preference, "generation_event_id": event}
+            return result
 
     def evasion(self, kind, epsilon):
         if self.current is None:
@@ -118,9 +143,14 @@ class DemoState:
             model, threshold = self.current["int8"], self.current["threshold"]
             original_rate = float(np.mean(model.logits(self.normalizer.transform(attack)) > threshold))
             rate = float(np.mean(model.logits(self.normalizer.transform(candidate)) > threshold))
-            return {"kind": kind, "epsilon": epsilon, "attack_rows": len(attack),
+            immutable = nf_mutable_mask(self.normalizer.features)
+            result = {"kind": kind, "epsilon": epsilon, "attack_rows": len(attack),
                     "original_detection_rate": original_rate, "evasion_detection_rate": rate,
-                    "immutable_fields_preserved": True, "feature_space_proxy": True}
+                    "immutable_fields_preserved": bool(np.array_equal(candidate[:, ~immutable], attack[:, ~immutable])),
+                    "feature_space_proxy": True}
+            result["registry_event_id"] = self.demo_registry.append_event("evasion_measurement", {
+                "generation_event_id": self.current["generation_event_id"], "result": result})
+            return result
 
     def traffic(self, count=20):
         if self.current is None:
@@ -129,10 +159,13 @@ class DemoState:
         with self.lock:
             model, threshold = self.current["int8"], self.current["threshold"]
             scores = model.logits(self.b_x[:count])
-            return {"partition": "B (CSE)", "total_rows": len(self.b_x),
+            result = {"partition": "B (CSE)", "total_rows": len(self.b_x),
                     "sample": [{"row": i, "label": int(self.b_raw[1][i]),
                                 "score": float(scores[i]), "alert": bool(scores[i] > threshold)}
                                for i in range(count)], "threshold_source": "A-val"}
+            result["registry_event_id"] = self.demo_registry.append_event("traffic_replay", {
+                "generation_event_id": self.current["generation_event_id"], "result": result})
+            return result
 
     def autopilot(self, window=128, detection_tolerance=.02):
         """Order-free B replay: switch baked context once per aggregate window."""
@@ -172,7 +205,7 @@ class DemoState:
             same_detection = abs(static_detection - dynamic_detection) <= detection_tolerance
             static_macs = current["baked"].macs
             dynamic_macs = weighted_macs / len(self.b_x)
-            return {"windows": len(contexts), "context_changes": sum(a != b for a, b in zip(contexts, contexts[1:])),
+            result = {"windows": len(contexts), "context_changes": sum(a != b for a, b in zip(contexts, contexts[1:])),
                     "static_detection_rate": static_detection, "dynamic_detection_rate": dynamic_detection,
                     "static_fpr": float(np.mean(baseline[benign])),
                     "dynamic_fpr": float(np.mean(dynamic[benign])),
@@ -183,6 +216,9 @@ class DemoState:
                     "detection_tolerance": detection_tolerance,
                     "temporal_order_verified": False,
                     "note": "Order-free B group-sample replay; no C4 research claim"}
+            result["registry_event_id"] = self.demo_registry.append_event("autopilot_measurement", {
+                "generation_event_id": self.current["generation_event_id"], "result": result})
+            return result
 
     def decide(self, approved):
         if not isinstance(approved, bool):

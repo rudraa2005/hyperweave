@@ -1,5 +1,6 @@
 """Streaming, deterministic endpoint-pair-disjoint NF-v2 sampling."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -11,6 +12,20 @@ from .flows import dataset_hash, iter_nf_csv_chunks
 SALT = np.uint64(20261024)
 RANK_SALT = np.uint64(0xA0761D6478BD642F)
 LIMIT = 6000
+
+
+def study_dataset_hash(manifest):
+    """Hash the split manifest and the fixed Phase 4 training subsample rule."""
+    payload = json.dumps(manifest, sort_keys=True) + "|train_subsample_seed=20261024|per_class=2000"
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _mix64(x):
@@ -108,9 +123,11 @@ def sample_group_disjoint(unsw_csv, cse_csv, features, output, *, limit=LIMIT, c
         group_sets.append(set(map(int, group)))
         destination = output / ("private" if name == "sealed" else "public")
         destination.mkdir(exist_ok=True)
-        np.savez_compressed(destination / f"{name}.npz", x=x, y=y, group=group)
+        partition_path = destination / f"{name}.npz"
+        np.savez_compressed(partition_path, x=x, y=y, group=group)
         manifest["partitions"][name] = {"rows": int(len(y)), "benign": int(np.sum(y == 0)),
                                          "attack": int(np.sum(y == 1)), "groups": len(group_sets[-1]),
+                                         "sha256": file_sha256(partition_path),
                                          "dataset": "nf_unsw_nb15_v2" if part < 2 else "nf_cse_cic_ids2018_v2"}
     for i in range(4):
         for j in range(i + 1, 4):

@@ -10,7 +10,7 @@ from hyperweave.config import Config
 from hyperweave.data.evasion import constrained_nf_evasion
 from hyperweave.data.shifts import apply_nf_shift
 from hyperweave.eval import score_binary, threshold_at_fpr
-from hyperweave.kernel.runner import bench, compile_kernel, infer, write_inputs
+from hyperweave.kernel.runner import TIMING_BATCH_ROWS, bench, compile_kernel, infer, write_inputs
 from hyperweave.models import HyperNet, NeuronSpec, bake, quantize, save_hypernet, write_int8
 
 
@@ -105,7 +105,11 @@ class ExperimentHarness:
                                       int8.logits_int(inputs)):
                     raise ValueError("C kernel disagrees with Python int8 reference")
                 int8_metrics = score_binary(b_y, int8.logits(b_x), threshold)
-                timing = bench(self.kernel_binary, export, inputs_path)
+                timing_inputs = self.artifact_root / f"{run_id}.bench.i8"
+                timing_rows = min(TIMING_BATCH_ROWS, len(inputs))
+                write_inputs(timing_inputs, inputs[:timing_rows])
+                timing = bench(self.kernel_binary, export, timing_inputs)
+                timing["batch_rows"] = timing_rows
                 metrics.update(int8=int8_metrics, int8_detection_gap=int8_metrics["detection_rate"] - metrics["detection_rate"],
                                latency=timing, int8_model_bytes=export.stat().st_size,
                                export_path=str(export), kernel_bit_exact=True)

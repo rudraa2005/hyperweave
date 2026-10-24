@@ -4,7 +4,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from hyperweave.data.group_split import endpoint_group_hash, partition_for_group, sample_group_disjoint
+from hyperweave.data.group_split import (endpoint_group_hash, file_sha256,
+                                         partition_for_group, sample_group_disjoint,
+                                         study_dataset_hash)
 from hyperweave.data.normalization import FlowNormalizer
 from hyperweave.eval.phase4_report import bootstrap_seed_interval
 
@@ -59,6 +61,13 @@ def test_streaming_group_split_has_no_pair_or_feature_overlap(tmp_path):
     assert all(not groups[i] & groups[j] and not hashes[i] & hashes[j]
                for i in range(4) for j in range(i + 1, 4))
     assert manifest["partitions"]["sealed"]["dataset"] == "nf_cse_cic_ids2018_v2"
+    for part in ("a_train", "a_val", "b", "sealed"):
+        folder = "private" if part == "sealed" else "public"
+        assert manifest["partitions"][part]["sha256"] == file_sha256(
+            tmp_path / "split" / folder / f"{part}.npz")
+    repeat = sample_group_disjoint(*files, features, tmp_path / "repeat", limit=4,
+                                   chunksize=3, min_val_benign=2)
+    assert study_dataset_hash(repeat) == study_dataset_hash(manifest)
 
 
 def test_normalizer_handles_extreme_finite_rates_without_leaking_eval(tmp_path):
@@ -95,4 +104,5 @@ def test_fixed_functional_bias_is_folded_into_bit_exact_int8_kernel(tmp_path):
     metrics = _functional_int8_metrics(model, x, x, y, .1, tmp_path, "fixed", binary, "fixture")
     assert metrics["kernel_bit_exact"]
     assert metrics["int8_model_bytes"] > 0
+    assert metrics["latency"]["batch_rows"] == len(x)
     assert np.isfinite(metrics["int8_detection_gap"])

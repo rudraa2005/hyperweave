@@ -1,4 +1,6 @@
 import json
+import os
+import shutil
 import struct
 import subprocess
 from pathlib import Path
@@ -7,11 +9,17 @@ import numpy as np
 
 
 SOURCE = Path(__file__).resolve().parents[2] / "kernel" / "infer.c"
+TIMING_BATCH_ROWS = 256
 
 
 def compile_kernel(output):
     output = Path(output)
-    subprocess.run(["cc", "-O3", "-std=c11", "-D_GNU_SOURCE", str(SOURCE), "-o", str(output)], check=True)
+    compiler = shutil.which("cc") or shutil.which("gcc")
+    if compiler is None:
+        raise RuntimeError("C compiler required: install cc or gcc")
+    if os.name == "nt":
+        output = output.with_suffix(".exe")
+    subprocess.run([compiler, "-O3", "-std=c11", "-D_GNU_SOURCE", str(SOURCE), "-o", str(output)], check=True)
     return output
 
 

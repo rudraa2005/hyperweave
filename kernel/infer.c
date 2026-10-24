@@ -4,7 +4,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <fcntl.h>
+#include <io.h>
+extern int _fileno(FILE *stream);
+#else
 #include <unistd.h>
+#endif
 #ifdef __linux__
 #define _GNU_SOURCE
 #include <sched.h>
@@ -71,9 +78,16 @@ static int32_t predict_one(const Model *m, const int8_t *x) {
 }
 
 static uint64_t now_ns(void) {
+#ifdef _WIN32
+    LARGE_INTEGER frequency, counter;
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&counter);
+    return (uint64_t)((long double)counter.QuadPart * 1000000000.0L / frequency.QuadPart);
+#else
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
     return (uint64_t)t.tv_sec * 1000000000ULL + (uint64_t)t.tv_nsec;
+#endif
 }
 
 static int compare_double(const void *a, const void *b) {
@@ -113,6 +127,9 @@ int main(int argc, char **argv) {
     }
     fclose(f);
     if (!strcmp(argv[1], "infer")) {
+#ifdef _WIN32
+        _setmode(_fileno(stdout), _O_BINARY);
+#endif
         for (uint32_t i = 0; i < count; i++) {
             int32_t value = predict_one(&m, inputs + (size_t)i * m.d);
             fwrite(&value, 4, 1, stdout);
@@ -146,7 +163,12 @@ int main(int argc, char **argv) {
         variance += diff * diff / 5;
     }
     char hostname[256] = {0};
+#ifdef _WIN32
+    DWORD hostname_size = sizeof(hostname);
+    GetComputerNameA(hostname, &hostname_size);
+#else
     gethostname(hostname, sizeof(hostname) - 1);
+#endif
     printf("{\"median_ns_per_flow\":%.3f,\"p99_ns_per_flow\":%.3f,\"repeat_median_variance\":%.3f,\"warmup\":%d,\"iterations\":%d,\"repeats\":5,\"core\":%d,\"pinned\":%s,\"hostname\":\"%s\",\"sink\":%d}\n",
            median, p99, variance, warmup, iterations, core, pinned ? "true" : "false", hostname, sink);
     return 0;

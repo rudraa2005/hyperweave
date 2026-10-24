@@ -1,10 +1,19 @@
 """Registry-derived Phase 4 outcome report; no hand-entered scores."""
+import hashlib
+import json
+
 import numpy as np
 
-from hyperweave.eval.hypervolume import hypervolume, nondominated
+from hyperweave.data.group_split import study_dataset_hash
+from hyperweave.eval.hypervolume import DENOMINATORS, REFERENCE, hypervolume, nondominated
 
 
 CONDITIONS = ("b1", "b2", "b2b", "b3", "b4", "b5", "b5b")
+OBJECTIVE_NORMALIZATION = DENOMINATORS
+HV_REFERENCE = REFERENCE
+HV_PROTOCOL_HASH = hashlib.sha256(json.dumps({"normalization": OBJECTIVE_NORMALIZATION,
+                                               "reference": HV_REFERENCE},
+                                              sort_keys=True).encode()).hexdigest()
 
 
 def bootstrap_seed_interval(seed_values, *, resamples=1000, seed=20261024):
@@ -18,13 +27,26 @@ def bootstrap_seed_interval(seed_values, *, resamples=1000, seed=20261024):
 
 def build_report(registry, manifest, sealed, output):
     rows = registry.all_runs()
-    if len(registry.events("sealed_final")) != 1:
+    sealed_events = registry.events("sealed_final")
+    if len(sealed_events) != 1:
         raise ValueError("final sealed evaluation must occur exactly once")
+    if sealed_events[0]["payload"].get("results") != sealed:
+        raise ValueError("sealed results differ from the registry event")
+    if not rows:
+        raise ValueError("report requires registry runs")
     if any(row["dataset_hash"] != rows[0]["dataset_hash"] for row in rows):
         raise ValueError("dataset hash differs across runs")
+    if rows[0]["dataset_hash"] != study_dataset_hash(manifest):
+        raise ValueError("registry dataset hash differs from the split manifest")
     code_hashes = {row.get("implementation_hash") for row in rows}
     if len(code_hashes) != 1:
         raise ValueError("implementation hash differs across runs")
+    timing_hosts = {(latency.get("hostname"), latency.get("core"), latency.get("batch_rows"))
+                    for row in rows if row.get("status") == "completed"
+                    for latency in [row["metrics"].get("latency", {})]
+                    if latency.get("pinned")}
+    if len(timing_hosts) > 1:
+        raise ValueError("pinned latency measurements span different hosts, cores, or batch sizes")
     scoreboard, selected = {}, {}
     for condition in CONDITIONS:
         group = [row for row in rows if row["config"]["model"] == condition]
@@ -46,6 +68,15 @@ def build_report(registry, manifest, sealed, output):
         int8_bytes = [value for value in int8_bytes if value is not None]
         quant_gaps = [row["metrics"].get("int8_detection_gap") for row in completed]
         quant_gaps = [value for value in quant_gaps if value is not None]
+        pinned = bool(completed) and all(
+            row["metrics"].get("latency", {}).get("pinned") and
+            row["metrics"]["latency"].get("median_ns_per_flow") is not None
+            for row in completed)
+        research_points = [
+            (1 - row["metrics"].get("int8", row["metrics"])["detection_rate"],
+             row["metrics"]["macs"] / OBJECTIVE_NORMALIZATION[1],
+             row["metrics"]["latency"]["median_ns_per_flow"] / OBJECTIVE_NORMALIZATION[2])
+            for row in completed] if pinned else []
         scoreboard[condition] = {
             "attempts": len(group), "completed": len(completed), "failed": len(group) - len(completed),
             "seeds": sorted(set(row["seed"] for row in group)),
@@ -65,17 +96,23 @@ def build_report(registry, manifest, sealed, output):
             "seed_bootstrap_detection_95": bootstrap_seed_interval(per_seed) if len(per_seed) >= 2 else None,
             "b_frontier_2d": frontier,
             "b_hv_2d_debug_proxy": hypervolume(points, (1, 1)) if points else None,
-            "research_hv_3d": None,
+            "research_hv_3d": hypervolume(research_points, HV_REFERENCE) if research_points else None,
             "sealed": sealed[condition],
         }
         selected[condition] = None if sealed[condition] is None else sealed[condition]["run_id"]
-    spent = {condition: sum(event["payload"]["condition"] == condition
-                            for event in registry.events("budget_reservation"))
+    spent = {condition: sum(event["payload"].get("cost", 0)
+                            for event in registry.events("budget_reservation")
+                            if event["payload"].get("condition") == condition)
              for condition in ("b3", "b4", "b5", "b5b")}
     if set(spent.values()) != {12}:
         raise ValueError("B3/B4/B5/B5b did not spend equal 12-run budgets")
     if any(scoreboard[name]["seeds"] != [11, 23, 37] for name in ("b3", "b4", "b5", "b5b")):
         raise ValueError("search conditions did not share seeds")
+    for condition in ("b3", "b4", "b5", "b5b"):
+        group = [row for row in rows if row["config"]["model"] == condition]
+        if len(group) != 12 or any(sum(row["seed"] == seed for row in group) != 4
+                                   for seed in (11, 23, 37)):
+            raise ValueError(f"{condition} registry runs do not match the 12-run seed protocol")
     by_id = {row["run_id"]: row for row in rows}
     matched_mac = []
     for seed in (11, 23, 37):
@@ -113,6 +150,9 @@ def build_report(registry, manifest, sealed, output):
         "source_sha256": manifest["source_sha256"],
         "partitions": manifest["partitions"],
         "target_fpr": .001,
+        "hypervolume_protocol": {"objective_normalization": OBJECTIVE_NORMALIZATION,
+                                  "reference": HV_REFERENCE, "sha256": HV_PROTOCOL_HASH,
+                                  "requires_one_pinned_host_and_core": True},
         "a_val_empirical_fpr_resolution": 1 / manifest["partitions"]["a_val"]["benign"],
         "budget": spent,
         "selected_runs": selected,
@@ -134,7 +174,10 @@ def build_report(registry, manifest, sealed, output):
         "agent_execution": "scripted_offline_replay",
         "approval_actor": "scripted_human_approval",
         "validator": "coarse_B_slice_only; sealed_opened_once_after_selection",
-        "latency_note": "Unpinned debug timing only; 3D research hypervolume withheld",
+        "latency_note": ("Pinned single-core research timing available"
+                         if timing_hosts and any(scoreboard[name]["research_hv_3d"] is not None
+                                                 for name in CONDITIONS)
+                         else "Unpinned debug timing only; 3D research hypervolume withheld"),
         "sealed_opened_once": True,
         "registry_path": str(output / "registry.sqlite"),
     }

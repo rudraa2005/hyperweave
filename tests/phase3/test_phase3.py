@@ -173,6 +173,11 @@ def test_registry_logs_prompt_and_model(tmp_path):
     assert all({"prompt", "model_version", "temperature", "tool_results", "response"}
                <= event["payload"].keys() for event in calls)
     assert all(event["payload"]["model_version"] == "mock-model-1" for event in calls)
+    assert all(event["payload"]["proposal_id"] == "p1" and
+               event["payload"]["condition"] == "b5" for event in calls)
+    proposal_call = next(event["payload"] for event in calls
+                         if event["payload"]["role"] == "Experimental Scientist")
+    assert "ranked_candidates" in proposal_call["tool_results"]["optimization_advice"]
     assert registry.events("frontier_snapshot")
 
 
@@ -208,6 +213,19 @@ def test_surrogate_trains(tmp_path):
                         "dataset_hash": "research", "git_commit": "test", "checkpoint_path": f"real{i}.npz",
                         "metrics": {"hv_gain_per_cost": .02 * (i + 1)}})
     assert surrogate.predict(Config(model="b5", width=12))["source"] == "ridge_hv"
+
+
+def test_agent_surrogate_uses_only_its_condition(tmp_path):
+    registry = Registry(tmp_path / "registry.sqlite")
+    for i, width in enumerate((4, 8, 16)):
+        config = Config(model="b4", width=width)
+        registry.write({"run_id": f"b4_{i}", "config": config.as_dict(), "seed": 11,
+                        "dataset_hash": "fixture", "git_commit": "test",
+                        "checkpoint_path": f"b4_{i}.npz",
+                        "metrics": {"proxy_hv_gain_per_cost": .1 + i}})
+    scoped = Surrogate(registry, condition="b5")
+    assert scoped.predict(Config(model="b5"))["source"] == "sparse_fallback"
+    assert scoped.predict(Config(model="b5"))["samples"] == 0
 
 
 def test_prediction_logged_for_calibration(tmp_path):
@@ -254,6 +272,8 @@ def test_b5b_blind(tmp_path):
         return set()
     assert all(not forbidden & keys(event["payload"]["tool_results"])
                for event in registry.events("agent_call"))
+    assert all(event["payload"]["condition"] == "b5b"
+               for event in registry.events("agent_call"))
 
 
 def test_b5_feedback_visible_b5b_hidden(tmp_path):
@@ -287,6 +307,32 @@ def test_human_rejection_prevents_execution(tmp_path):
     outcome = cycle.run("p1", base, HumanDecision(False, "test_human"))
     assert outcome["status"] == "rejected_by_human" and not outcome["executed"]
     assert registry.all_runs() == [] and cycle.budget.remaining("b5") == 1
+
+
+def test_role_config_decisions_affect_run_and_coordinator_can_stop_it(tmp_path):
+    registry, _, _, cycle, base = _setup(tmp_path / "approved")
+    cycle.client.responses["Neuron Architect"] = [{"config_diff": {"functional_hidden": 3}}]
+    cycle.client.responses["Training Strategist"] = [{"config_diff": {"batch_size": 128}}]
+    outcome = cycle.run("p1", base, HumanDecision(True, "test_human"))
+    record = registry.read(outcome["run_id"])
+    assert record["config"]["functional_hidden"] == 3
+    assert record["config"]["batch_size"] == 128
+    assert {event["payload"]["role"] for event in registry.events("role_config_applied")} == {
+        "Neuron Architect", "Training Strategist"}
+
+    registry, _, _, cycle, base = _setup(tmp_path / "rejected")
+    cycle.client.responses["Coordinator"] = [{"recommendation": "reject", "reason": "unsafe proposal"}]
+    outcome = cycle.run("p1", base, HumanDecision(True, "test_human"))
+    assert outcome["status"] == "rejected_by_coordinator" and not outcome["executed"]
+    assert cycle.budget.remaining("b5") == 1 and registry.all_runs() == []
+    assert registry.events("coordinator_rejection")[0]["payload"]["reason"] == "unsafe proposal"
+
+
+def test_b5b_cannot_be_started_with_visible_metrics(tmp_path):
+    registry = Registry(tmp_path / "registry.sqlite")
+    with pytest.raises(ValueError, match="evidence-blind"):
+        AgentCycle(registry, None, None, ScriptedClient(scripted_responses(count=1)),
+                   condition="b5b", blind=False)
 
 
 def test_simulated_action_labelled(tmp_path):

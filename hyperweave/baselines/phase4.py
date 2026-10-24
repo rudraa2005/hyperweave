@@ -13,11 +13,12 @@ from hyperweave.agents.experiment import ExperimentHarness
 from hyperweave.baselines.nsga2 import NSGA2Search
 from hyperweave.baselines.phase3 import run_condition
 from hyperweave.config import Config, SEARCH_OPTIONS
+from hyperweave.data.group_split import file_sha256, study_dataset_hash
 from hyperweave.data.normalization import FlowNormalizer
 from hyperweave.eval.metrics import score_binary, score_with_recalibration, threshold_at_fpr
 from hyperweave.eval.robustness import robustness_report
 from hyperweave.eval.sealed import SealedValidator
-from hyperweave.kernel.runner import bench, compile_kernel, infer, write_inputs
+from hyperweave.kernel.runner import TIMING_BATCH_ROWS, bench, compile_kernel, infer, write_inputs
 from hyperweave.models import (AffineMLP, BakedModel, FunctionalNet, match_affine_width,
                                load_hypernet, bake, quantize, read_int8, write_int8)
 from hyperweave.models.noise_envelope import NoiseEnvelope
@@ -62,7 +63,11 @@ def _functional_int8_metrics(model, train_x, b_x, b_y, threshold, artifacts, run
     if not np.array_equal(infer(binary, export, input_path, len(b_x)), int8.logits_int(inputs)):
         raise ValueError("fixed functional model disagrees with C int8 kernel")
     int8_metrics = score_binary(b_y, int8.logits(b_x), threshold)
-    timing = bench(binary, export, input_path)
+    timing_inputs = artifacts / f"{run_id}.bench.i8"
+    timing_rows = min(TIMING_BATCH_ROWS, len(inputs))
+    write_inputs(timing_inputs, inputs[:timing_rows])
+    timing = bench(binary, export, timing_inputs)
+    timing["batch_rows"] = timing_rows
     return {"int8": int8_metrics, "int8_detection_gap": int8_metrics["detection_rate"] -
             float(np.mean(model.logits(b_x)[b_y == 1] > threshold)),
             "int8_model_bytes": export.stat().st_size, "latency": timing,
@@ -234,21 +239,34 @@ def run(split_dir, output):
     split_dir, output = Path(split_dir), Path(output)
     if output.exists() and any(output.iterdir()):
         raise FileExistsError("use a fresh Phase 4 output directory")
-    output.mkdir(parents=True, exist_ok=True)
-    manifest = json.loads((split_dir / "manifest.json").read_text())
+    manifest_path = split_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Phase 4 split manifest is missing: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text())
     if manifest["kind"] != "endpoint_pair_group_disjoint_v1":
         raise ValueError("unexpected split protocol")
     features = manifest["features"]
+    if len(features) != 43 or len(set(features)) != 43:
+        raise ValueError("Phase 4 requires the ordered 43-feature split manifest")
+    for name in ("a_train", "a_val", "b"):
+        partition = split_dir / "public" / f"{name}.npz"
+        if not partition.is_file():
+            raise FileNotFoundError(f"Phase 4 public partition is missing: {name}")
+        expected_hash = manifest.get("partitions", {}).get(name, {}).get("sha256")
+        if expected_hash is not None and file_sha256(partition) != expected_hash:
+            raise ValueError(f"Phase 4 public partition hash mismatch: {name}")
+    if not (split_dir / "private" / "sealed.npz").is_file():
+        raise FileNotFoundError("Phase 4 sealed partition is missing")
     train_raw, train_y = _train_subset(*_load_public(split_dir, "a_train"))
     val_raw, val_y = _load_public(split_dir, "a_val")
     b_raw, b_y = _load_public(split_dir, "b")
     normalizer = FlowNormalizer(features).fit(train_raw)
+    output.mkdir(parents=True, exist_ok=True)
     normalizer.save(output / "normalizer.npz")
     train = normalizer.transform(train_raw), train_y
     val = normalizer.transform(val_raw), val_y
     b = normalizer.transform(b_raw), b_y
-    source_hash = hashlib.sha256((json.dumps(manifest, sort_keys=True) +
-                                  "|train_subsample_seed=20261024|per_class=2000").encode()).hexdigest()
+    source_hash = study_dataset_hash(manifest)
     repo = Path(__file__).resolve().parents[2]
     code_files = sorted((repo / "hyperweave").rglob("*.py")) + [repo / "kernel" / "infer.c",
                   repo / "configs" / "nf_v2_features.txt", repo / "docs" / "group_split_protocol.md"]

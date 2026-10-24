@@ -5,6 +5,7 @@ __pycache__/
 *.npz
 runs/
 data/raw/
+hyperweave/data/raw/
 *.csv
 .DS_Store
 

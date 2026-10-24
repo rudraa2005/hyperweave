@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from hyperweave.config import Config
+from hyperweave.data.group_split import file_sha256, study_dataset_hash
 from hyperweave.data.normalization import FlowNormalizer
 from hyperweave.demo.phase5 import DemoState, STATIC, make_handler
 from hyperweave.models import HyperNet, NeuronSpec, save_hypernet
@@ -28,18 +29,23 @@ def _fixture(tmp_path):
         x[:, features.index("OUT_PKTS")] = 2
         y = np.tile([0, 1], 60).astype(np.uint8)
         np.savez(split / "public" / f"{name}.npz", x=x, y=y)
+    manifest = {"kind": "endpoint_pair_group_disjoint_v1", "partitions": {
+        name: {"sha256": file_sha256(split / "public" / f"{name}.npz")}
+        for name in ("a_train", "a_val", "b")}}
+    (split / "manifest.json").write_text(json.dumps(manifest))
+    dataset_hash = study_dataset_hash(manifest)
     with np.load(split / "public" / "a_train.npz") as data:
         FlowNormalizer(features).fit(data["x"]).save(study / "normalizer.npz")
     (study / "artifacts").mkdir()
     checkpoint = study / "artifacts" / "candidate.npz"
     save_hypernet(HyperNet(NeuronSpec(43, 8, 2)), checkpoint)
     record = {"run_id": "candidate", "config": Config(model="b3", width=8,
-              functional_hidden=2).as_dict(), "seed": 11, "dataset_hash": "fixture-hash",
+              functional_hidden=2).as_dict(), "seed": 11, "dataset_hash": dataset_hash,
               "git_commit": "fixture-commit", "metrics": {"detection_rate": .5},
               "checkpoint_path": "artifacts/candidate.npz", "status": "completed"}
     Registry(study / "registry.sqlite").write(record)
     (study / "report.json").write_text(json.dumps({
-        "kind": "real_nf_v2_endpoint_group_alternate_study", "dataset_hash": "fixture-hash",
+        "kind": "real_nf_v2_endpoint_group_alternate_study", "dataset_hash": dataset_hash,
         "selected_runs": {"b3": "candidate"}, "scoreboard": {}, "partitions": {},
     }))
     return study, split
@@ -53,13 +59,23 @@ def test_slider_generates_int8_without_training_and_evasion_is_constrained(tmp_p
     assert result["optimizer_steps_during_generation"] == 0
     assert result["macs"] >= 0 and result["int8_model_bytes"] > 0
     assert result["latency"]["median_ns_per_flow"] > 0
-    assert (state.generated_dir / "cost0200_load1_alerts2.hwi").exists()
-    assert len(state.traffic(5)["sample"]) == 5
+    assert result["latency"]["batch_rows"] == 120
+    artifact = state.generated_dir / "generation000001_cost0200_load1_alerts2.hwi"
+    assert artifact.exists()
+    event = state.demo_registry.events("model_generation")[0]
+    assert result["registry_event_id"] == event["event_id"]
+    assert event["payload"]["result"]["int8"] == result["int8"]
+    assert event["payload"]["artifact"] == str(artifact)
+    traffic = state.traffic(5)
+    assert len(traffic["sample"]) == 5
+    assert state.demo_registry.events("traffic_replay")[0]["payload"]["result"]["sample"] == traffic["sample"]
     attacked = state.evasion("padding", .1)
     assert attacked["feature_space_proxy"] and attacked["immutable_fields_preserved"]
     assert attacked["attack_rows"] == 60
+    assert state.demo_registry.events("evasion_measurement")[0]["payload"]["result"]["evasion_detection_rate"] == attacked["evasion_detection_rate"]
     replay = state.autopilot(window=20)
     assert replay["windows"] == 6 and replay["temporal_order_verified"] is False
+    assert state.demo_registry.events("autopilot_measurement")[0]["payload"]["result"]["windows"] == replay["windows"]
     if not replay["equal_detection_within_tolerance"]:
         assert replay["cost_reduction_at_equal_detection"] is None
 
@@ -81,8 +97,9 @@ def test_five_views_limits_and_offline_assets():
         assert f'id="{view}"' in html
     assert 'id="limits-button"' in html and 'id="limits"' in html
     assert "https://" not in html and "http://" not in html
-    js = (STATIC / "app.js").read_text()
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
     assert all(path in js for path in ("/api/generate", "/api/evasion", "/api/autopilot", "/api/decision"))
+    assert "B HV · 3D research" in js and "r.latency_note" in js
 
 
 def test_http_routes_in_process_without_network(tmp_path):
@@ -99,3 +116,19 @@ def test_http_routes_in_process_without_network(tmp_path):
     handler.wfile = BytesIO()
     handler.do_GET()
     assert b"Traffic console" in handler.wfile.getvalue()
+
+
+def test_demo_refuses_mismatched_split_and_tampered_public_partition(tmp_path):
+    study, split = _fixture(tmp_path)
+    manifest_path = split / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["kind"] = "different_protocol"
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="split does not match"):
+        DemoState(study, split)
+    manifest["kind"] = "endpoint_pair_group_disjoint_v1"
+    manifest_path.write_text(json.dumps(manifest))
+    with (split / "public" / "b.npz").open("ab") as stream:
+        stream.write(b"tampered")
+    with pytest.raises(ValueError, match="partition hash mismatch"):
+        DemoState(study, split)
