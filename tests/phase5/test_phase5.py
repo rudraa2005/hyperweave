@@ -62,6 +62,22 @@ def test_slider_generates_int8_without_training_and_evasion_is_constrained(tmp_p
     assert result["latency"]["batch_rows"] == 120
     artifact = state.generated_dir / "generation000001_cost0200_load1_alerts2.hwi"
     assert artifact.exists()
+    proof = result["export"]
+    verification = result["kernel_verification"]
+    assert proof["sha256"] and proof["manifest_sha256"]
+    assert proof["active_neurons"] + proof["pruned_neurons"] == proof["total_neurons"]
+    assert proof["dimensions"]["neurons_after_pruning"] == proof["active_neurons"]
+    assert verification["verified"] and verification["rows_compared"] == len(state.b_x)
+    assert verification["mismatched_rows"] == verification["maximum_absolute_logit_difference"] == 0
+    assert all(pair["c"] == pair["python"] for pair in verification["sample_integer_logits"])
+    artifact_handler = object.__new__(make_handler(state))
+    artifact_handler.path = f"/api/artifact?name={proof['filename']}"
+    artifact_handler.wfile = BytesIO()
+    artifact_handler.send_response = lambda code: None
+    artifact_handler.send_header = lambda key, value: None
+    artifact_handler.end_headers = lambda: None
+    artifact_handler.do_GET()
+    assert artifact_handler.wfile.getvalue() == artifact.read_bytes()
     event = state.demo_registry.events("model_generation")[0]
     assert result["registry_event_id"] == event["event_id"]
     assert event["payload"]["result"]["int8"] == result["int8"]
@@ -72,6 +88,16 @@ def test_slider_generates_int8_without_training_and_evasion_is_constrained(tmp_p
     attacked = state.evasion("padding", .1)
     assert attacked["feature_space_proxy"] and attacked["immutable_fields_preserved"]
     assert attacked["attack_rows"] == 60
+    assert attacked["constraint_checks"] == {"immutable_fields_preserved": True,
+        "epsilon_bound_preserved": True, "nonnegative_features": True,
+        "all_changes_within_mutable_features": True}
+    assert attacked["changed_flows"] > 0 and attacked["feature_changes"]
+    assert len(attacked["examples"]) == min(attacked["changed_flows"], 12)
+    assert attacked["detected_to_missed"] <= attacked["original_detected"]
+    assert attacked["candidate_detected"] == attacked["original_detected"] - attacked["detected_to_missed"] + attacked["missed_to_detected"]
+    unchanged = state.evasion("padding", 0)
+    assert unchanged["changed_flows"] == unchanged["changed_feature_count"] == 0
+    assert unchanged["original_detection_rate"] == unchanged["evasion_detection_rate"]
     assert state.demo_registry.events("evasion_measurement")[0]["payload"]["result"]["evasion_detection_rate"] == attacked["evasion_detection_rate"]
     replay = state.autopilot(window=20)
     assert replay["windows"] == 6 and replay["temporal_order_verified"] is False
@@ -91,6 +117,26 @@ def test_human_gate_rejection_prevents_execution_and_approval_records_simulation
     assert state.demo_registry.read(approved["outcome"]["run_id"])["status"] == "simulated"
 
 
+def test_domain_analysis_uses_generated_parameters_and_actual_domain_rows(tmp_path):
+    state = DemoState(*_fixture(tmp_path))
+    measured = state.domain_analysis()
+    assert measured["source_domain"]["name"] == "UNSW-NB15 A-train"
+    assert measured["target_domain"]["name"] == "CSE-CIC-IDS2018 B-evaluation"
+    assert len(measured["feature_points"]) == 41
+    assert len(measured["source_logit_curve"]) == len(measured["target_logit_curve"]) == 41
+    assert measured["math"]["network"].startswith("f(x)")
+
+    same_context = state.domain_analysis(*measured["source_context"])
+    assert same_context["same_context"]
+    assert same_context["parameter_delta_l2"] == pytest.approx(0, abs=1e-12)
+
+    changed_context = state.domain_analysis(2, 2)
+    assert changed_context["target_context"] == [2, 2]
+    assert changed_context["parameter_delta_l2"] > 0
+    assert changed_context["target_context_mode"] == "user_selected_context_scenario"
+    assert changed_context["registry_event_id"]
+
+
 def test_five_views_limits_and_offline_assets():
     html = (STATIC / "index.html").read_text()
     for view in ("traffic", "posture", "evasion", "notebook", "scoreboard"):
@@ -98,7 +144,7 @@ def test_five_views_limits_and_offline_assets():
     assert 'id="limits-button"' in html and 'id="limits"' in html
     assert "https://" not in html and "http://" not in html
     js = (STATIC / "app.js").read_text(encoding="utf-8")
-    assert all(path in js for path in ("/api/generate", "/api/evasion", "/api/autopilot", "/api/decision"))
+    assert all(path in js for path in ("/api/generate", "/api/evasion", "/api/autopilot", "/api/decision", "/api/domain/compare"))
     assert "B HV · 3D research" in js and "r.latency_note" in js
 
 
@@ -116,6 +162,22 @@ def test_http_routes_in_process_without_network(tmp_path):
     handler.wfile = BytesIO()
     handler.do_GET()
     assert b"Traffic console" in handler.wfile.getvalue()
+    handler.path = "/api/live/status"
+    handler.wfile = BytesIO()
+    handler.do_GET()
+    status = json.loads(handler.wfile.getvalue())
+    assert status["running"] is False
+    assert status["ground_truth_available"] is False
+    handler.path = "/api/live/interfaces"
+    handler.wfile = BytesIO()
+    handler.do_GET()
+    assert "interfaces" in json.loads(handler.wfile.getvalue())
+    handler.path = "/api/domain/compare?load=2&alerts=1&feature=IN_BYTES"
+    handler.wfile = BytesIO()
+    handler.do_GET()
+    comparison = json.loads(handler.wfile.getvalue())
+    assert comparison["target_context"] == [2, 1]
+    assert comparison["target_context_mode"] == "user_selected_context_scenario"
 
 
 def test_demo_refuses_mismatched_split_and_tampered_public_partition(tmp_path):

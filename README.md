@@ -4,6 +4,8 @@ Phase 1–5 research prototype with a runner for a real NF-v2 endpoint-group stu
 
 For a phase-by-phase account of what this checkout can verify and what still
 requires datasets or pinned hardware, see the [implementation audit](docs/implementation_audit.md).
+For the complete project study, measured limitations, live-demo evidence, and
+future research plan, see the [research report](docs/research_report.md).
 For official dataset sources, checksum checks, and the exact run artifacts,
 see the [data and artifact handoff](docs/data_and_artifacts.md).
 Run `python -m hyperweave.data.prepare` to see which inputs are present.
@@ -24,7 +26,7 @@ python3 -m hyperweave.baselines.phase4 --split runs/group_split_01 --output runs
 python3 -m hyperweave.demo.phase5 --study runs/phase4_group_final --split runs/group_split_01 --port 8765
 ```
 
-Open `http://127.0.0.1:8765/` for the five-view dashboard. The CLI creates immutable run records and a registry-derived report. Use fresh output directories for a rerun. The dashboard only binds to localhost and works without external network access. See [group split protocol](docs/group_split_protocol.md), [Phase 4 status](docs/phase4_status.md), and [Phase 5 guide](docs/phase5_demo.md).
+Open `http://127.0.0.1:8765/` for the dashboard. The Traffic Console can passively capture packets from a selected local interface with `tcpdump`, aggregate approximate bidirectional flows, score them with the selected trained int8 checkpoint, and show packet/bit rates and live local-agent activity. Capture is passive and does not block or modify traffic. The dashboard only binds to localhost. See [group split protocol](docs/group_split_protocol.md), [Phase 4 status](docs/phase4_status.md), and [Phase 5 guide](docs/phase5_demo.md) for capture requirements and limitations.
 
 The two NF-v2 CSV datasets and Fashion-MNIST files are **not bundled**. The two
 NF-v2 CSVs are sufficient for the network-defense study; Fashion-MNIST is only

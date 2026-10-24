@@ -1,13 +1,40 @@
-# Phase 5 offline demo
+# Phase 5 demo
 
-Start with the command in `README.md`, then open the localhost page. The five
-views are Traffic console, Posture + autopilot, Evasion test, Agent notebook,
-and Scoreboard. Every displayed score comes from the Phase 4 registry or from
-an actual on-demand bake of its selected B3 hypernetwork checkpoint. Each
-slider generation now writes its measured metrics, source run, threshold
-provenance, and artifact SHA-256 to `demo_actions.sqlite`; the UI shows the
-registry event ID. Generated artifacts have unique names so a later slider
-movement cannot overwrite an earlier recorded artifact.
+Start with the command in `README.md`, then open the localhost page. The dashboard
+retains the offline research views and adds passive capture on the Traffic
+Console. Select a local interface and start capture to see packet/bit rates,
+bidirectional flow updates, int8 scores, model alerts, and local analysis-agent
+events update as packets arrive. Stop capture from the same control.
+
+Capture uses the installed `tcpdump` executable and the host's packet-capture
+permissions. It writes no pcap file and does not alter or block traffic. The
+flow adapter derives packet counts, IP bytes, duration, ports, transport
+protocol, TCP flags/window, TTL, and packet-size statistics. NF-v2 application
+fields such as identified L7 protocol, DNS response details, and retransmission
+counters are unavailable from this header-only adapter and are set to zero.
+IPv6 address handling and bidirectional direction are approximations. Live
+scores are therefore a demonstration of inference on approximate flow features;
+they have no ground-truth labels and are not validated IDS performance.
+
+The six live roles are bounded local rule-based routines, not LLM agents. They
+inspect observed feature drift, model score/threshold, architecture cost, and
+triage priority. The Coordinator only sets a priority; no automated response is
+executed. The Agent Notebook separately shows historical scripted research calls.
+No LLM provider or credentials are bundled. For offline evaluation, the
+Scoreboard, evasion, and benchmark replay continue to use the Phase 4 registry
+and labeled recorded flows. Slider generation bakes the selected trained
+checkpoint without retraining and records metrics, threshold provenance, and
+artifact SHA-256 in `demo_actions.sqlite`.
+
+The Posture view's **Domain shift → generated neural function** explorer
+computes measured load/alert contexts for UNSW A-train and CSE B-evaluation,
+then calls the trained hypernetwork and reports actual parameter, gate, MAC,
+and int8 metric changes. It plots the generated network output while sweeping
+one selected feature through real B percentiles, holding remaining features at
+their B medians. Neuron gates and contribution deltas come from the generated
+tensors. When both datasets map to the same context, the UI says that the
+generated function is unchanged. User-selected context bins are explicitly
+labeled as scenarios, not observed domain measurements.
 
 ## Model path
 
@@ -53,17 +80,19 @@ flowchart LR
    budgets. Open Limits in one click. C1–C4 verdicts are inconclusive; local
    timings are unpinned and cannot establish a line-rate cycle budget.
 
-The browser UI uses only local HTML, CSS and JavaScript. The server binds to
-`127.0.0.1`; it does not fetch external assets or call a model API. The
-recorded agent cycle is a replay of actual tool decisions on the real sampled
-flows, with scripted proposals and a coarse B-slice validator. The simulated
-response button writes a separate local registry entry.
+The browser UI uses local HTML, CSS and JavaScript. The server binds to
+`127.0.0.1` and does not fetch external assets or call a model API. Live capture
+uses `tcpdump` only while capture is enabled. The recorded agent cycle is a
+replay of actual tool decisions on sampled NF-v2 flows, with scripted proposals
+and a coarse B-slice validator. The simulated response button writes a separate
+local registry entry.
 
-Run `make verify-phase5` for portable tests. The test suite exercises model
-generation without an optimizer step, constrained evasion, the approval gate,
-the five views, the limits control, and in-process HTTP routes. A local socket
-bind may be disallowed by some sandbox environments; the in-process route tests
-do not require a socket.
+Run `make verify-phase5` for portable tests. The test suite exercises packet
+decoding and feature mapping, model generation without an optimizer step,
+constrained evasion, the approval gate, dashboard views, and in-process HTTP
+routes. A local socket bind may be disallowed by some sandbox environments;
+the in-process route tests do not require a socket. A successful live capture
+still depends on the host granting `tcpdump` access to the selected interface.
 
 The three-minute script is a presentation target. A timed manual dry run and a
 clean-machine offline demo remain unverified in this checkout because the
