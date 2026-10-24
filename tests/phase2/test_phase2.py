@@ -227,7 +227,7 @@ def test_checkpoint_to_baked_mvp_cycle(tmp_path):
     phase2 = tmp_path / "phase2"
     report = run_phase2(csv, features, "nf_unsw_nb15_v2", "campaign", "time",
                         phase1 / "registry.sqlite", "nf_unsw_nb15_v2_b2_seed11", phase2,
-                        epochs=1, preferences=((.8, .1, .1), (.28, .12, .6)))
+                        epochs=1, preferences=((.8, .1, .1), (.28, .12, .6)), robustness=True)
     registry = Registry(phase2 / "registry.sqlite")
     assert registry.read(report["fixed_run_id"])["metrics"] == report["fixed"]
     assert len(report["b3_run_ids"]) == len(report["b2b_run_ids"]) == 2
@@ -238,6 +238,8 @@ def test_checkpoint_to_baked_mvp_cycle(tmp_path):
         assert np.isfinite(metrics["int8_detection_gap"])
         assert metrics["int8_model_bytes"] > 0
         assert metrics["latency"]["median_ns_per_flow"] > 0
+        assert metrics["robustness"]["backend"] == "int8_python_reference_bit_exact_with_C_kernel"
+        assert metrics["robustness"]["threshold_source"] == "a_val"
         assert json.loads((phase2 / f"{run_id}.hwi.json").read_text())["dataset_hash"] == record["dataset_hash"]
     if report["timing_comparable"]:
         assert np.isfinite(report["b3_hv"]) and np.isfinite(report["b2b_hv"])

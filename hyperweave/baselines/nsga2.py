@@ -39,6 +39,7 @@ def _objective(record, mode):
     if record.get("status") != "completed":
         return (float("inf"),) * 3
     metrics = record["metrics"]
+    deployed = metrics.get("int8", metrics)
     if mode == "research":
         latency = metrics.get("latency", {})
         if not latency.get("pinned") or latency.get("median_ns_per_flow") is None:
@@ -46,7 +47,7 @@ def _objective(record, mode):
         third = latency["median_ns_per_flow"] / 1000000
     else:
         third = metrics["params"] * 8 / 1000000
-    return (1 - metrics["detection_rate"], metrics["macs"] / 100000, third)
+    return (1 - deployed["detection_rate"], metrics["macs"] / 100000, third)
 
 
 class NSGA2Search:

@@ -15,7 +15,8 @@ import pandas as pd
 
 from hyperweave.config import Config
 from hyperweave.data.flows import iter_nf_csv_chunks, validate_nf_header
-from hyperweave.data.shifts import apply_shift
+from hyperweave.data.shifts import SHIFTABLE_FEATURES, apply_nf_shift, apply_shift
+from hyperweave.data.evasion import constrained_nf_evasion
 from hyperweave.kernel.runner import compile_kernel, infer, write_inputs
 from hyperweave.models import (AffineMLP, FunctionalNet, HyperNet, NeuronSpec,
                                bake, quantize, save_hypernet, write_int8)
@@ -128,17 +129,29 @@ def audit(path, dataset, features, output, *, chunksize=100000, smoke_train=Fals
                                   "checkpoint_path": str(checkpoint)})
         report["training_smoke"] = smoke_results
         if phase2_smoke:
-            shift_columns = tuple(features.index(name) for name in
-                                  ("IN_BYTES", "FLOW_DURATION_MILLISECONDS") if name in features)
+            shift_columns = tuple(i for i, name in enumerate(features) if name in SHIFTABLE_FEATURES)
+            nf_schema = bool(shift_columns)
             if not shift_columns:
                 shift_columns = (2,) if len(features) > 2 else (0,)
             def transform(batch, family, columns, shift_seed):
                 raw = batch * scale + center
-                shifted = apply_shift(raw, family, columns, 1, seed=shift_seed)
+                shifted = (apply_nf_shift(raw, features, family, 1, seed=shift_seed, columns=columns)
+                           if nf_schema else apply_shift(raw, family, columns, 1, seed=shift_seed))
                 return (shifted - center) / scale
+            benign_reference = np.median(x[y == 0] * scale + center, axis=0)
+            def attack_transform(batch, labels, attack_seed):
+                selected = np.asarray(labels) == 1
+                if not selected.any():
+                    return batch
+                raw = batch.copy() * scale + center
+                kind = ("noise", "jitter", "padding", "toward_benign")[attack_seed % 4]
+                raw[selected] = constrained_nf_evasion(raw[selected], benign_reference,
+                                                       features, .1, kind, seed=attack_seed)
+                return (raw - center) / scale
             hyper = HyperNet(NeuronSpec(len(features), 8, 2), seed=11)
             hyper.fit(x, y, epochs=1, batch_size=128, seed=11,
-                      shift_columns=shift_columns, shift_transform=transform)
+                      shift_columns=shift_columns, shift_transform=transform,
+                      evasion_transform=attack_transform)
             hyper_checkpoint = output / f"{dataset}_b3_hypernet_smoke_seed11.npz"
             save_hypernet(hyper, hyper_checkpoint)
             binary = compile_kernel(output / "infer")

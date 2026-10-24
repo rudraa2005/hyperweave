@@ -10,8 +10,10 @@ import numpy as np
 from hyperweave.config import Config
 from hyperweave.data import deduplicate, load_nf_csv, split_by_campaign, validate_chronological, validate_disjoint
 from hyperweave.data.flows import dataset_hash
-from hyperweave.data.shifts import apply_shift
+from hyperweave.data.shifts import SHIFTABLE_FEATURES, apply_nf_shift, apply_shift
+from hyperweave.data.evasion import constrained_nf_evasion
 from hyperweave.eval import hypervolume, normalize_objectives, score_binary, threshold_at_fpr
+from hyperweave.eval.robustness import reconstruction_report, robustness_report
 from hyperweave.kernel.runner import bench, compile_kernel, infer, write_inputs
 from hyperweave.models import (BakedModel, FunctionalNet, HyperNet, NeuronSpec, bake,
                                quantize, save_hypernet, write_int8)
@@ -63,7 +65,8 @@ def _measure(baked, train_x, val_x, val_y, b_x, b_y, target_fpr, binary, path, m
 
 def run(csv_path, features, dataset, campaign_col, time_col, phase1_registry, fixed_run_id, output,
         *, epochs=3, seed=11, preferences=PREFERENCES, context=(0, 0), train_b2b=True,
-        shift_columns=(0,), loss_mode="linear", concentration=(1., 1., 1.)):
+        shift_columns=None, loss_mode="linear", concentration=(1., 1., 1.),
+        robustness=False, autoencoder=False):
     seed_everything(seed)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
@@ -75,6 +78,12 @@ def run(csv_path, features, dataset, campaign_col, time_col, phase1_registry, fi
     fixed, center, scale = _fixed_baked(source["checkpoint_path"])
     if fixed.w1.shape[-1] != len(features):
         raise ValueError("feature manifest differs from checkpoint input dimension")
+    if shift_columns is None:
+        shift_columns = tuple(i for i, name in enumerate(features) if name in SHIFTABLE_FEATURES) or (0,)
+    nf_schema = bool(set(features) & SHIFTABLE_FEATURES)
+    if not shift_columns or any(i < 0 or i >= len(features) or (nf_schema and features[i] not in SHIFTABLE_FEATURES)
+                                for i in shift_columns):
+        raise ValueError("shift_columns must select mutable NF-v2 features")
     df = deduplicate(load_nf_csv(csv_path, dataset, features, campaign_col=campaign_col, time_col=time_col), features)
     splits = split_by_campaign(df, campaign_col, time_col)
     validate_disjoint(splits, features, campaign_col)
@@ -85,6 +94,8 @@ def run(csv_path, features, dataset, campaign_col, time_col, phase1_registry, fi
     train_x, train_y = arrays("a_train")
     val_x, val_y = arrays("a_val")
     b_x, b_y = arrays("b")
+    train_raw = splits["a_train"][features].to_numpy(dtype=float)
+    b_raw = splits["b"][features].to_numpy(dtype=float)
     target_fpr = source["config"]["target_fpr"]
     if (val_y == 0).sum() < int(np.ceil(1 / target_fpr)):
         raise ValueError("A-val insufficient for FPR calibration")
@@ -95,10 +106,28 @@ def run(csv_path, features, dataset, campaign_col, time_col, phase1_registry, fi
         run_ids += [f"{dataset}_b2b_seed{seed}_lambda{i}" for i in range(len(preferences))]
     planned_artifacts = [output / f"{run_id}.hwi" for run_id in run_ids]
     planned_artifacts += [output / f"{dataset}_hypernet_seed{seed}.npz", output / "comparison.json"]
+    if autoencoder:
+        planned_artifacts.append(output / f"{dataset}_noise_envelope_seed{seed}.npz")
     if train_b2b:
         planned_artifacts += [output / f"{run_id}.npz" for run_id in run_ids if "_b2b_" in run_id]
     if any(registry.read(run_id) for run_id in run_ids) or any(path.exists() for path in planned_artifacts):
         raise FileExistsError("Phase 2 run ID or artifact already exists")
+    envelope = None
+    if autoencoder:
+        from hyperweave.models.noise_envelope import NoiseEnvelope
+        envelope = NoiseEnvelope(len(features), seed=seed).fit(train_x[train_y == 0])
+        envelope.calibrate(val_x[val_y == 0], target_fpr)
+        envelope.save(output / f"{dataset}_noise_envelope_seed{seed}.npz")
+    def diagnostics(baked, detector_threshold):
+        result = {}
+        if robustness:
+            int8_detector = quantize(baked, train_x[:min(1024, len(train_x))])
+            result["robustness"] = robustness_report(int8_detector, features, train_raw, train_y, b_raw, b_y,
+                                                      center, scale, detector_threshold, seed=seed)
+            result["robustness"]["backend"] = "int8_python_reference_bit_exact_with_C_kernel"
+        if envelope is not None:
+            result["reconstruction"] = reconstruction_report(envelope, b_x, b_y)
+        return result
     binary = compile_kernel(output / "infer")
     git_commit = _commit()
     git_dirty = _dirty()
@@ -107,6 +136,7 @@ def run(csv_path, features, dataset, campaign_col, time_col, phase1_registry, fi
                              output / f"{fixed_comparison_id}.hwi", {"run_id": fixed_comparison_id,
                                 "source_run_id": fixed_run_id, "dataset_hash": ds_hash,
                                 "seed": seed, "git_commit": git_commit, "git_dirty": git_dirty, "kind": "fixed_b2"})
+    fixed_metrics.update(diagnostics(fixed, fixed_metrics["threshold"]))
     fixed_record = {"run_id": fixed_comparison_id, "config": dict(source["config"], model="b2"),
                     "seed": seed, "dataset_hash": ds_hash, "git_commit": git_commit,
                     "git_dirty": git_dirty, "metrics": fixed_metrics,
@@ -116,11 +146,22 @@ def run(csv_path, features, dataset, campaign_col, time_col, phase1_registry, fi
     start = time.perf_counter()
     def shift_transform(batch, family, columns, shift_seed):
         raw = batch * scale + center
-        shifted = apply_shift(raw, family, columns, 1, seed=shift_seed)
+        shifted = (apply_nf_shift(raw, features, family, 1, seed=shift_seed, columns=columns)
+                   if nf_schema else apply_shift(raw, family, columns, 1, seed=shift_seed))
         return (shifted - center) / scale
+    benign_reference = np.median(train_raw[train_y == 0], axis=0)
+    def evasion_transform(batch, labels, attack_seed):
+        attack_rows = np.asarray(labels) == 1
+        if not attack_rows.any():
+            return batch
+        raw = batch.copy() * scale + center
+        kind = ("noise", "jitter", "padding", "toward_benign")[attack_seed % 4]
+        raw[attack_rows] = constrained_nf_evasion(raw[attack_rows], benign_reference,
+                                                   features, .1, kind, seed=attack_seed)
+        return (raw - center) / scale
     history = model.fit(train_x, train_y, epochs=epochs, seed=seed, mode=loss_mode,
                         concentration=concentration, shift_columns=shift_columns,
-                        shift_transform=shift_transform)
+                        shift_transform=shift_transform, evasion_transform=evasion_transform)
     training_seconds = time.perf_counter() - start
     hyper_checkpoint = output / f"{dataset}_hypernet_seed{seed}.npz"
     save_hypernet(model, hyper_checkpoint)
@@ -138,6 +179,7 @@ def run(csv_path, features, dataset, campaign_col, time_col, phase1_registry, fi
                     "hypernet_checkpoint": str(hyper_checkpoint),
                     "source_run_id": fixed_run_id}
         metrics = _measure(baked, train_x, val_x, val_y, b_x, b_y, target_fpr, binary, path, manifest)
+        metrics.update(diagnostics(baked, metrics["threshold"]))
         metrics["training_seconds"] = training_seconds
         record = {"run_id": run_id, "config": config, "seed": seed, "dataset_hash": ds_hash,
                   "git_commit": git_commit, "git_dirty": git_dirty,
@@ -165,6 +207,7 @@ def run(csv_path, features, dataset, campaign_col, time_col, phase1_registry, fi
                                output / f"{run_id}.hwi", {"run_id": run_id, "config": config,
                                                             "seed": seed, "dataset_hash": ds_hash,
                                                             "git_commit": git_commit, "checkpoint": str(checkpoint)})
+            metrics.update(diagnostics(fixed_competitor, metrics["threshold"]))
             metrics["training_seconds"] = seconds
             record = {"run_id": run_id, "config": config, "seed": seed, "dataset_hash": ds_hash,
                       "git_commit": git_commit, "git_dirty": git_dirty,
@@ -198,10 +241,12 @@ def main():
     parser.add_argument("--seed", type=int, default=11)
     parser.add_argument("--preferences", help="JSON list of three-objective simplex vectors")
     parser.add_argument("--context", nargs=2, type=int, default=(0, 0))
-    parser.add_argument("--shift-columns", nargs="+", type=int, default=(0,),
+    parser.add_argument("--shift-columns", nargs="+", type=int,
                         help="Indices of mutable count/timing features used for training shifts")
     parser.add_argument("--loss-mode", choices=("linear", "phn_hvi"), default="linear")
     parser.add_argument("--dirichlet-concentration", nargs=3, type=float, default=(1., 1., 1.))
+    parser.add_argument("--robustness", action="store_true", help="offline B shift/evasion sweep")
+    parser.add_argument("--autoencoder", action="store_true", help="offline benign reconstruction diagnostic (requires torch)")
     args = parser.parse_args()
     preferences = json.loads(args.preferences) if args.preferences else PREFERENCES
     report = run(args.csv, Path(args.features).read_text().splitlines(), args.dataset,
@@ -209,7 +254,8 @@ def main():
                  args.output, epochs=args.epochs, seed=args.seed,
                  preferences=preferences, context=tuple(args.context),
                  shift_columns=tuple(args.shift_columns), loss_mode=args.loss_mode,
-                 concentration=tuple(args.dirichlet_concentration))
+                 concentration=tuple(args.dirichlet_concentration), robustness=args.robustness,
+                 autoencoder=args.autoencoder)
     print(json.dumps(report, indent=2, sort_keys=True))
 
 

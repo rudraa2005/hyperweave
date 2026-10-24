@@ -13,7 +13,10 @@ SEARCH_OPTIONS = {
     "context": ((0, 0), (1, 1), (2, 2)),
     "loss_mode": ("linear", "phn_hvi"),
     "dirichlet_concentration": ((1., 1., 1.), (.5, .5, .5)),
-    "shift_columns": ((0,), (0, 1)),
+    # Complete byte/packet pairs plus timing and derived rates; never IP fields.
+    "shift_columns": ((6, 8, 10, 14, 15, 22, 28),
+                      (6, 7, 8, 9, 10, 14, 15, 22, 23, 24, 25, 26, 27, 28, 29,
+                       30, 31, 32, 33, 34)),
 }
 
 

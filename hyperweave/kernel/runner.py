@@ -37,3 +37,16 @@ def bench(binary, model_path, input_path, *, warmup=100, iterations=1000):
     result = subprocess.run([str(binary), "bench", str(model_path), str(input_path),
                              str(warmup), str(iterations)], check=True, capture_output=True, text=True)
     return json.loads(result.stdout)
+
+
+def enforce_latency_budget(measurement, *, median_ns, p99_ns):
+    """Deployment gate: only a pinned-core measurement may satisfy a budget."""
+    if not measurement.get("pinned"):
+        raise RuntimeError("line-rate budget requires a pinned-core measurement")
+    if median_ns <= 0 or p99_ns <= 0:
+        raise ValueError("latency budgets must be positive")
+    if measurement.get("median_ns_per_flow") is None or measurement.get("p99_ns_per_flow") is None:
+        raise ValueError("measurement is missing median or p99")
+    if measurement["median_ns_per_flow"] > median_ns or measurement["p99_ns_per_flow"] > p99_ns:
+        raise RuntimeError("line-rate latency budget exceeded")
+    return True

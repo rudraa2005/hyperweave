@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HyperWeave · Network defense study</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="mark">HW</span><div><strong>HyperWeave</strong><small>IT Infrastructure · network defense</small></div></div>
+    <div class="status"><span class="dot"></span> Local offline study <button id="limits-button">Limits</button></div>
+  </header>
+  <div class="hero">
+    <p class="eyebrow">REAL NF-V2 FLOWS · GROUP-DISJOINT ALTERNATE STUDY</p>
+    <h1>Detect attacks while keeping inference cost visible.</h1>
+    <p>Follow a network-flow batch from detection through model selection, a recorded agent proposal, human oversight, and an audited outcome.</p>
+    <div id="hero-stats" class="hero-stats"></div>
+  </div>
+  <nav aria-label="Study views">
+    <button data-view="traffic" class="active">01 Traffic console</button>
+    <button data-view="posture">02 Posture + autopilot</button>
+    <button data-view="evasion">03 Evasion test</button>
+    <button data-view="notebook">04 Agent notebook</button>
+    <button data-view="scoreboard">05 Scoreboard</button>
+  </nav>
+  <main>
+    <section id="traffic" class="view active">
+      <div class="section-head"><div><p class="eyebrow">INGEST → DETECT</p><h2>Traffic console</h2><p>Held-out B flows from CSE. Scores come from a generated int8 candidate; the alert threshold comes from UNSW A-val.</p></div><span class="badge">No production blocking</span></div>
+      <div id="traffic-summary" class="cards"></div>
+      <div class="panel"><div class="panel-head"><h3>Flow replay sample</h3><span>Endpoint addresses hidden</span></div><div id="traffic-table" class="table-wrap"></div></div>
+    </section>
+    <section id="posture" class="view">
+      <div class="section-head"><div><p class="eyebrow">GENERATE → BAKE → MEASURE</p><h2>Posture + autopilot</h2><p>Move the cost preference to generate a model from the recorded hypernetwork checkpoint. Each setting is quantized and checked against the C kernel without retraining.</p></div></div>
+      <div class="panel controls"><label>Cost preference <strong id="cost-value">0.10</strong><input id="cost" type="range" min="0.05" max="0.90" step="0.05" value="0.10"></label><label>Link load <select id="load"><option value="0">Low</option><option value="1">Medium</option><option value="2">High</option></select></label><label>Alert rate <select id="alerts"><option value="0">Low</option><option value="1">Medium</option><option value="2">High</option></select></label><button id="autopilot" class="primary">Run context autopilot replay</button></div>
+      <div id="model-cards" class="cards"></div>
+      <div id="autopilot-result" class="panel" hidden></div>
+      <div class="panel"><div class="panel-head"><h3>Functional neurons</h3><span>Grey means pruned in this baked candidate</span></div><div id="neurons" class="neurons"></div><p id="model-note" class="muted"></p></div>
+    </section>
+    <section id="evasion" class="view">
+      <div class="section-head"><div><p class="eyebrow">CONSTRAIN → ATTACK → SCORE</p><h2>Evasion test</h2><p>Modify only permitted volume and timing features on B attack flows. The test preserves endpoints and protocol fields and stays within a fractional feature budget.</p></div><span class="badge">Feature-space proxy</span></div>
+      <div class="panel controls"><label>Attack family <select id="attack-kind"><option value="noise">Artificial noise</option><option value="jitter">Timing jitter</option><option value="padding">Byte padding</option><option value="toward_benign">Drift toward benign</option></select></label><label>Budget ε <select id="epsilon"><option value="0">0.00</option><option value="0.1" selected>0.10</option><option value="0.2">0.20</option><option value="0.3">0.30</option></select></label><button id="run-evasion" class="primary">Run constrained test</button></div>
+      <div id="evasion-result" class="cards"></div>
+    </section>
+    <section id="notebook" class="view">
+      <div class="section-head"><div><p class="eyebrow">PROPOSE → APPROVE → EXECUTE → REPORT</p><h2>Agent notebook</h2><p>A recorded, scripted six-role cycle from the real-data run. Tool calls and decisions are traceable to the registry; no live LLM is implied.</p></div><span class="badge">Scripted offline replay</span></div>
+      <div id="validator-summary" class="panel"></div>
+      <div id="agent-events" class="timeline"></div>
+      <div class="panel"><h3>Try the human gate</h3><p>This local action is a controlled response simulation. Approval writes a simulated outcome; rejection prevents execution.</p><div class="actions"><button id="approve" class="primary">Approve simulation</button><button id="reject">Reject proposal</button></div><pre id="decision-result"></pre></div>
+    </section>
+    <section id="scoreboard" class="view">
+      <div class="section-head"><div><p class="eyebrow">REGISTRY-DERIVED OUTCOMES</p><h2>Scoreboard</h2><p>Actual bounded group-split results. B helped select candidates; sealed was opened once after selection. Intervals resample the three shared seeds.</p></div></div>
+      <div id="scoreboard-table" class="table-wrap panel"></div>
+      <div id="autoencoder" class="panel"></div>
+      <div id="claims" class="panel"></div>
+    </section>
+  </main>
+  <dialog id="limits"><div class="dialog-head"><h2>Limits of this study</h2><button id="close-limits">Close</button></div><ul id="limits-list"></ul><p>The original C1–C4 proposal thresholds were unavailable, so claim verdicts remain inconclusive.</p></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

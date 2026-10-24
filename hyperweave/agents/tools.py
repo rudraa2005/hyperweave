@@ -123,10 +123,10 @@ class OptimizationScientistTools:
         rows = [r for r in self.registry.all_runs() if r["config"]["model"] == condition and r.get("status", "completed") == "completed"]
         pinned = bool(rows) and all(r.get("metrics", {}).get("latency", {}).get("pinned") for r in rows)
         if pinned:
-            points = [normalize_objectives(r["metrics"]["detection_rate"], r["metrics"]["macs"],
+            points = [normalize_objectives(r["metrics"].get("int8", r["metrics"])["detection_rate"], r["metrics"]["macs"],
                                            r["metrics"]["latency"]["median_ns_per_flow"]) for r in rows]
         else:
-            points = [(1 - r["metrics"]["detection_rate"], r["metrics"]["macs"] / 100000,
+            points = [(1 - r["metrics"].get("int8", r["metrics"])["detection_rate"], r["metrics"]["macs"] / 100000,
                        r["metrics"].get("params", 0) * 8 / 1000000) for r in rows]
         return rows, points, pinned
 

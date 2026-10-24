@@ -205,7 +205,8 @@ class HyperNet:
                 "expected_macs": float(points[:, 2].mean() * self.spec.neurons * self.spec.macs_per_neuron)}
 
     def fit(self, x, y, *, epochs=3, batch_size=128, lr=.01, seed=11, mode="linear",
-            heldout=(), concentration=(1., 1., 1.), shift_columns=(0,), shift_transform=None):
+            heldout=(), concentration=(1., 1., 1.), shift_columns=(0,), shift_transform=None,
+            evasion_transform=None):
         x, y = np.asarray(x, float), np.asarray(y, float)
         rng = np.random.default_rng(seed)
         history = []
@@ -213,10 +214,12 @@ class HyperNet:
             for ids in np.array_split(rng.permutation(len(x)), max(1, int(np.ceil(len(x) / batch_size)))):
                 lam = sample_preference(rng, concentration=concentration, heldout=heldout)
                 context = tuple(int(v) for v in rng.integers(0, 3, 2))
-                family = "count_rescale" if self.optimizer_steps % 2 == 0 else "timing_jitter"
+                family = ("count_rescale", "timing_jitter", "feature_dropout")[self.optimizer_steps % 3]
                 transform = shift_transform or (lambda batch, name, columns, shift_seed:
                                                 apply_shift(batch, name, columns, 1, seed=shift_seed))
                 shift = transform(x[ids], family, list(shift_columns), seed + self.optimizer_steps)
+                if evasion_transform is not None:
+                    shift = evasion_transform(shift, y[ids], seed + self.optimizer_steps)
                 if mode == "phn_hvi":
                     preferences = [lam] + [sample_preference(rng, concentration=concentration, heldout=heldout)
                                            for _ in range(2)]

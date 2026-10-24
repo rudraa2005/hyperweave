@@ -32,7 +32,8 @@ def scripted_responses(*, count=12, validation_calls=3):
             "Adversarial Validator": [{"assessment": "coarse verdict recorded"} for _ in range(validation_calls)]}
 
 
-def run_condition(registry, experiment, validator, condition, *, seeds=SEEDS, trials_per_seed=TRIALS_PER_SEED):
+def run_condition(registry, experiment, validator, condition, *, seeds=SEEDS, trials_per_seed=TRIALS_PER_SEED,
+                  target_fpr=.01, shift_columns=(0,)):
     count = len(seeds) * trials_per_seed
     client = ScriptedClient(scripted_responses(count=count, validation_calls=len(seeds)))
     cycle = AgentCycle(registry, experiment, validator, client, condition=condition,
@@ -41,7 +42,8 @@ def run_condition(registry, experiment, validator, condition, *, seeds=SEEDS, tr
     for seed in seeds:
         for trial in range(trials_per_seed):
             base = Config(model=condition, seed=seed, input_dim=43, width=16,
-                          functional_hidden=4, epochs=1, batch_size=128, target_fpr=.01)
+                          functional_hidden=4, epochs=1, batch_size=128, target_fpr=target_fpr,
+                          shift_columns=shift_columns)
             outcomes.append(cycle.run(f"{condition}_seed{seed}_trial{trial}", base,
                                       HumanDecision(True, "scripted_human_approval"),
                                       request_validation=(trial == 0)))
